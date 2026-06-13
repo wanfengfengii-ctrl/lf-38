@@ -357,6 +357,51 @@ function createEditorStore() {
     }
   }
 
+  const STORAGE_KEY = 'rope-editor-scheme';
+
+  function saveToLocalStorage(): boolean {
+    if (!canSave(get(nodes), get(ropes))) {
+      return false;
+    }
+    try {
+      const data = {
+        nodes: Array.from(get(nodes).values()),
+        ropes: Array.from(get(ropes).values()),
+        savedAt: new Date().toISOString()
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function loadFromLocalStorage(): boolean {
+    try {
+      const json = localStorage.getItem(STORAGE_KEY);
+      if (!json) return false;
+      return importScheme(json);
+    } catch {
+      return false;
+    }
+  }
+
+  function hasSavedScheme(): boolean {
+    try {
+      return localStorage.getItem(STORAGE_KEY) !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  function clearSavedScheme(): void {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  }
+
   function togglePulleyActive(id: string) {
     nodes.update(($nodes) => {
       const node = $nodes.get(id);
@@ -569,7 +614,11 @@ function createEditorStore() {
     togglePulleyActive,
     setPulleyDirection,
     loadDemoData,
-    isNodeNumberAvailable
+    isNodeNumberAvailable,
+    saveToLocalStorage,
+    loadFromLocalStorage,
+    hasSavedScheme,
+    clearSavedScheme
   };
 }
 

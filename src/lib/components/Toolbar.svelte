@@ -17,7 +17,8 @@
     totalRopeLength,
     nodes,
     ropes,
-    setMode
+    setMode,
+    saveToLocalStorage
   } = store;
 
   let currentMode = $derived($mode ?? 'select');
@@ -90,16 +91,26 @@
     input.click();
   }
 
-  function handleSaveCheck() {
+  function handleSave() {
     if (currentCanSave) {
-      alert('✓ 方案验证通过，可以保存！');
+      const success = saveToLocalStorage();
+      if (success) {
+        alert('✓ 方案已保存到本地');
+      } else {
+        alert('✗ 保存失败');
+      }
     } else {
       alert('✗ 方案存在错误，请修复后再保存');
     }
   }
 
   function handleLoadDemo() {
-    console.log('加载示例按钮被点击');
+    const hasContent = currentNodes.size > 0 || currentRopes.size > 0;
+    if (hasContent) {
+      if (!confirm('加载示例将覆盖当前所有内容，确定继续吗？')) {
+        return;
+      }
+    }
     loadDemoData();
   }
 </script>
@@ -184,14 +195,14 @@
 
       <button
         type="button"
-        onclick={handleSaveCheck}
+        onclick={handleSave}
         class="px-3 py-1.5 text-sm rounded transition-colors {
           currentCanSave
             ? 'bg-green-500 text-white hover:bg-green-600'
             : 'bg-red-500 text-white hover:bg-red-600'
         }"
       >
-        {currentCanSave ? '✓ 可保存' : '✗ 有错误'}
+        {currentCanSave ? '💾 保存' : '✗ 有错误'}
       </button>
 
       <button

@@ -7,10 +7,13 @@
   import ErrorPanel from '$lib/components/ErrorPanel.svelte';
   import { editorStore } from '$lib/stores/editorStore';
 
-  const { loadDemoData } = editorStore;
+  const { loadFromLocalStorage, loadDemoData } = editorStore;
 
   onMount(() => {
-    loadDemoData();
+    const loaded = loadFromLocalStorage();
+    if (!loaded) {
+      loadDemoData();
+    }
   });
 </script>
 
