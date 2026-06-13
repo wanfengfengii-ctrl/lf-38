@@ -1,5 +1,6 @@
 <script lang="ts">
   import { editorStore } from '$lib/stores/editorStore';
+  import type { ValidationError } from '$lib/types';
 
   const store = editorStore;
   const { validationErrors, selectNode, selectRope, hasErrors } = store;
@@ -7,11 +8,45 @@
   let currentErrors = $derived($validationErrors ?? []);
   let currentHasErrors = $derived($hasErrors ?? false);
 
-  function handleErrorClick(error: { type: string; id: string }) {
-    if (error.type === 'node' || error.type === 'path') {
+  function handleErrorClick(error: ValidationError) {
+    if (error.type === 'node') {
       selectNode(error.id);
-    } else if (error.type === 'rope') {
+    } else if (error.type === 'rope' || error.type === 'path' || error.type === 'segment' || error.type === 'continuity') {
       selectRope(error.id);
+    }
+  }
+
+  function getTypeLabel(type: string): string {
+    switch (type) {
+      case 'node':
+        return '节点';
+      case 'rope':
+        return '缆绳';
+      case 'path':
+        return '路径';
+      case 'segment':
+        return '缆段';
+      case 'continuity':
+        return '连续性';
+      default:
+        return '未知';
+    }
+  }
+
+  function getTypeColor(type: string): string {
+    switch (type) {
+      case 'node':
+        return 'bg-blue-100 text-blue-700';
+      case 'rope':
+        return 'bg-orange-100 text-orange-700';
+      case 'path':
+        return 'bg-purple-100 text-purple-700';
+      case 'segment':
+        return 'bg-pink-100 text-pink-700';
+      case 'continuity':
+        return 'bg-amber-100 text-amber-700';
+      default:
+        return 'bg-gray-100 text-gray-700';
     }
   }
 </script>
@@ -33,7 +68,7 @@
   <div class="max-h-40 overflow-y-auto">
     {#if currentErrors.length === 0}
       <div class="p-4 text-center text-gray-500 text-sm">
-        所有数据验证通过
+        所有数据验证通过 · 路径连续 · 滑轮状态正常
       </div>
     {:else}
       <div class="divide-y divide-gray-100">
@@ -54,15 +89,12 @@
             </span>
             <div class="flex-1 min-w-0">
               <span
-                class="text-xs px-1.5 py-0.5 rounded mr-1.5 {
-                  error.type === 'node'
-                    ? 'bg-blue-100 text-blue-700'
-                    : error.type === 'rope'
-                    ? 'bg-orange-100 text-orange-700'
-                    : 'bg-purple-100 text-purple-700'
-                }"
+                class="text-xs px-1.5 py-0.5 rounded mr-1.5 {getTypeColor(error.type)}"
               >
-                {error.type === 'node' ? '节点' : error.type === 'rope' ? '缆绳' : '路径'}
+                {getTypeLabel(error.type)}
+                {#if error.segmentIndex !== undefined}
+                  · 第{error.segmentIndex + 1}段
+                {/if}
               </span>
               <span class="text-gray-700">{error.message}</span>
             </div>

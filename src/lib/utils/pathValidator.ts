@@ -4,100 +4,38 @@ import type {
   RopePath,
   PathSegment,
   ValidationError,
-  PulleyNode
+  PulleyNode,
+  Position,
+  PathChainNode
 } from '$lib/types';
-import { calculateDistance } from '$lib/types';
+import {
+  calculateDistance,
+  applyOffset,
+  calculateAngle,
+  NODE_TYPE_LABELS,
+  PULLEY_DIRECTION_LABELS
+} from '$lib/types';
 
-export function validateRopePath(
-  rope: RopeData,
-  nodes: Map<string, RopeNode>,
-  ropes: Map<string, RopeData>
-): RopePath {
-  const segments: PathSegment[] = [];
-  const errors: string[] = [];
-  let totalLength = 0;
-  let isClosed = true;
-  let isValid = true;
-
-  if (rope.tension <= 0) {
-    errors.push('缆绳张力必须大于 0');
-    isValid = false;
-  }
-
-  if (rope.length <= 0) {
-    errors.push('缆绳长度必须大于 0');
-    isValid = false;
-  }
-
-  const sourceNode = nodes.get(rope.source);
-  const targetNode = nodes.get(rope.target);
-
-  if (!sourceNode) {
-    errors.push(`起始节点 ${rope.source} 不存在`);
-    isValid = false;
-    isClosed = false;
-  }
-
-  if (!targetNode) {
-    errors.push(`目标节点 ${rope.target} 不存在`);
-    isValid = false;
-    isClosed = false;
-  }
-
-  if (sourceNode && targetNode) {
-    const segment = validateSegment(sourceNode, targetNode, nodes, ropes, rope.id);
-    segments.push(segment);
-    totalLength += segment.length;
-
-    if (!segment.valid) {
-      isValid = false;
-      if (segment.error) {
-        errors.push(segment.error);
-      }
-    }
-
-    if (sourceNode.type === 'pulley' && !sourceNode.active) {
-      errors.push(`滑轮 "${sourceNode.label}" 已停用，不能参与路径`);
-      isValid = false;
-    }
-
-    if (targetNode.type === 'pulley' && !targetNode.active) {
-      errors.push(`滑轮 "${targetNode.label}" 已停用，不能参与路径`);
-      isValid = false;
-    }
-
-    if (sourceNode.type === 'pulley' && sourceNode.active && 
-        targetNode.type === 'pulley' && targetNode.active) {
-      if (!checkPulleyDirection(sourceNode, targetNode)) {
-        errors.push(`滑轮方向冲突：缆绳从 "${sourceNode.label}" 到 "${targetNode.label}" 的穿绕方向不正确`);
-        isValid = false;
-      }
-    }
-
-    isClosed = checkPathClosed(rope, nodes, ropes);
-    if (!isClosed) {
-      errors.push('缆绳路径未闭合，首尾断开');
-    }
-  }
-
-  return {
-    ropeId: rope.id,
-    segments,
-    totalLength,
-    isClosed,
-    isValid,
-    errors
-  };
+function getNodeEffectivePosition(
+  node: RopeNode,
+  chainNode: PathChainNode,
+  isExit: boolean
+): Position {
+  const offset = isExit ? chainNode.exitOffset : chainNode.entryOffset;
+  return applyOffset(node.position, offset);
 }
 
 function validateSegment(
   fromNode: RopeNode,
   toNode: RopeNode,
-  nodes: Map<string, RopeNode>,
-  ropes: Map<string, RopeData>,
-  currentRopeId: string
+  fromChainNode: PathChainNode,
+  toChainNode: PathChainNode,
+  segmentIndex: number
 ): PathSegment {
-  const length = calculateDistance(fromNode.position, toNode.position);
+  const fromPosition = getNodeEffectivePosition(fromNode, fromChainNode, true);
+  const toPosition = getNodeEffectivePosition(toNode, toChainNode, false);
+
+  const length = calculateDistance(fromPosition, toPosition);
   let valid = true;
   let error: string | undefined;
 
@@ -106,81 +44,248 @@ function validateSegment(
     error = '缆绳不能连接到同一节点';
   }
 
-  if (fromNode.type === 'pulley' && !fromNode.active) {
+  if (fromNode.type === 'pulley' && !(fromNode as PulleyNode).active) {
     valid = false;
     error = `滑轮 "${fromNode.label}" 已停用`;
   }
 
-  if (toNode.type === 'pulley' && !toNode.active) {
+  if (toNode.type === 'pulley' && !(toNode as PulleyNode).active) {
     valid = false;
     error = `滑轮 "${toNode.label}" 已停用`;
   }
 
-  for (const [, rope] of ropes) {
-    if (rope.id === currentRopeId) continue;
-    if (
-      (rope.source === fromNode.id && rope.target === toNode.id) ||
-      (rope.source === toNode.id && rope.target === fromNode.id)
-    ) {
-      error = `与缆绳 "${rope.label}" 路径重复`;
-      break;
-    }
+  if (length <= 0) {
+    valid = false;
+    error = '缆绳段长度必须大于 0';
   }
 
   return {
     fromNode: fromNode.id,
     toNode: toNode.id,
+    fromPosition,
+    toPosition,
+    fromExitOffset: fromChainNode.exitOffset,
+    toEntryOffset: toChainNode.entryOffset,
     length,
     valid,
-    error
+    error,
+    segmentIndex
   };
 }
 
-function checkPulleyDirection(fromPulley: PulleyNode, toPulley: PulleyNode): boolean {
-  if (fromPulley.direction === 'bidirectional' || toPulley.direction === 'bidirectional') {
-    return true;
+function checkPulleyDirectionSequence(
+  chainNodes: PathChainNode[],
+  nodes: Map<string, RopeNode>
+): { nodeId: string; error: string }[] {
+  const errors: { nodeId: string; error: string }[] = [];
+
+  if (chainNodes.length < 3) {
+    return errors;
   }
 
-  const dx = toPulley.position.x - fromPulley.position.x;
-  const dy = toPulley.position.y - fromPulley.position.y;
+  for (let i = 1; i < chainNodes.length - 1; i++) {
+    const chainNode = chainNodes[i];
+    const node = nodes.get(chainNode.nodeId);
 
-  if (fromPulley.direction === 'clockwise') {
-    return dx > 0 || (dx === 0 && dy > 0);
-  } else if (fromPulley.direction === 'counterclockwise') {
-    return dx < 0 || (dx === 0 && dy < 0);
+    if (!node || node.type !== 'pulley') continue;
+
+    const pulley = node as PulleyNode;
+    if (!pulley.active) continue;
+    if (pulley.direction === 'bidirectional') continue;
+
+    const prevChainNode = chainNodes[i - 1];
+    const prevNode = nodes.get(prevChainNode.nodeId);
+    const nextChainNode = chainNodes[i + 1];
+    const nextNode = nodes.get(nextChainNode.nodeId);
+
+    if (!prevNode || !nextNode) continue;
+
+    const entryPos = getNodeEffectivePosition(prevNode, prevChainNode, true);
+    const pulleyPos = getNodeEffectivePosition(pulley, chainNode, false);
+    const exitPos = getNodeEffectivePosition(nextNode, nextChainNode, false);
+
+    const entryAngle = calculateAngle(entryPos, pulleyPos);
+    const exitAngle = calculateAngle(pulleyPos, exitPos);
+
+    const crossProduct =
+      (pulleyPos.x - entryPos.x) * (exitPos.y - pulleyPos.y) -
+      (pulleyPos.y - entryPos.y) * (exitPos.x - pulleyPos.x);
+
+    const isClockwise = crossProduct > 0;
+
+    if (pulley.direction === 'clockwise' && !isClockwise) {
+      errors.push({
+        nodeId: pulley.id,
+        error: `滑轮 "${pulley.label}" 方向为顺时针，但穿绕方向为逆时针，请调整入点/出点`
+      });
+    } else if (pulley.direction === 'counterclockwise' && isClockwise) {
+      errors.push({
+        nodeId: pulley.id,
+        error: `滑轮 "${pulley.label}" 方向为逆时针，但穿绕方向为顺时针，请调整入点/出点`
+      });
+    }
   }
 
-  return true;
+  return errors;
 }
 
-function checkPathClosed(
-  rope: RopeData,
-  nodes: Map<string, RopeNode>,
-  ropes: Map<string, RopeData>
-): boolean {
-  const visited = new Set<string>();
-  const queue: string[] = [rope.source];
+function checkInactivePulleysInPath(
+  chainNodes: PathChainNode[],
+  nodes: Map<string, RopeNode>
+): { nodeId: string; error: string }[] {
+  const errors: { nodeId: string; error: string }[] = [];
 
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    if (visited.has(current)) continue;
-    visited.add(current);
+  for (const chainNode of chainNodes) {
+    const node = nodes.get(chainNode.nodeId);
+    if (!node) continue;
+    if (node.type === 'pulley' && !(node as PulleyNode).active) {
+      errors.push({
+        nodeId: node.id,
+        error: `滑轮 "${node.label}" 已停用，不能参与穿绕路径`
+      });
+    }
+  }
 
-    if (current === rope.target) {
-      return true;
+  return errors;
+}
+
+function checkContinuity(
+  chainNodes: PathChainNode[],
+  nodes: Map<string, RopeNode>
+): { isContinuous: boolean; error?: string } {
+  if (chainNodes.length < 2) {
+    return {
+      isContinuous: false,
+      error: '缆绳路径至少需要 2 个节点'
+    };
+  }
+
+  for (let i = 0; i < chainNodes.length; i++) {
+    const chainNode = chainNodes[i];
+    const node = nodes.get(chainNode.nodeId);
+    if (!node) {
+      return {
+        isContinuous: false,
+        error: `路径中第 ${i + 1} 个节点不存在`
+      };
+    }
+  }
+
+  for (let i = 0; i < chainNodes.length - 1; i++) {
+    const fromChain = chainNodes[i];
+    const toChain = chainNodes[i + 1];
+    const fromNode = nodes.get(fromChain.nodeId)!;
+    const toNode = nodes.get(toChain.nodeId)!;
+
+    if (fromNode.id === toNode.id) {
+      return {
+        isContinuous: false,
+        error: `路径第 ${i + 1} 段连接了相同节点 "${fromNode.label}"`
+      };
     }
 
-    for (const [, r] of ropes) {
-      if (r.source === current && !visited.has(r.target)) {
-        queue.push(r.target);
-      }
-      if (r.target === current && !visited.has(r.source)) {
-        queue.push(r.source);
+    const fromPos = getNodeEffectivePosition(fromNode, fromChain, true);
+    const toPos = getNodeEffectivePosition(toNode, toChain, false);
+    const dist = calculateDistance(fromPos, toPos);
+
+    if (dist <= 0) {
+      return {
+        isContinuous: false,
+        error: `路径第 ${i + 1} 段长度为 0（"${fromNode.label}" → "${toNode.label}"）`
+      };
+    }
+  }
+
+  return { isContinuous: true };
+}
+
+export function validateRopePath(
+  rope: RopeData,
+  nodes: Map<string, RopeNode>,
+  _allRopes: Map<string, RopeData>
+): RopePath {
+  const segments: PathSegment[] = [];
+  const errors: string[] = [];
+  let totalLength = 0;
+  let isValid = true;
+
+  const nodeOrder = rope.nodePath.map(cn => cn.nodeId);
+
+  if (rope.tension <= 0) {
+    errors.push('缆绳张力必须大于 0');
+    isValid = false;
+  }
+
+  if (rope.nodePath.length < 2) {
+    errors.push('缆绳穿绕路径至少需要 2 个节点');
+    isValid = false;
+  }
+
+  const continuity = checkContinuity(rope.nodePath, nodes);
+  if (!continuity.isContinuous) {
+    isValid = false;
+    errors.push(continuity.error || '路径不连续');
+  }
+
+  for (let i = 0; i < rope.nodePath.length - 1; i++) {
+    const fromChain = rope.nodePath[i];
+    const toChain = rope.nodePath[i + 1];
+    const fromNode = nodes.get(fromChain.nodeId);
+    const toNode = nodes.get(toChain.nodeId);
+
+    if (!fromNode || !toNode) continue;
+
+    const segment = validateSegment(fromNode, toNode, fromChain, toChain, i);
+    segments.push(segment);
+    totalLength += segment.length;
+
+    if (!segment.valid) {
+      isValid = false;
+      if (segment.error) {
+        errors.push(`第 ${i + 1} 段: ${segment.error}`);
       }
     }
   }
 
-  return false;
+  const inactivePulleyErrors = checkInactivePulleysInPath(rope.nodePath, nodes);
+  if (inactivePulleyErrors.length > 0) {
+    isValid = false;
+    for (const e of inactivePulleyErrors) {
+      errors.push(e.error);
+    }
+  }
+
+  const pulleyDirectionErrors = checkPulleyDirectionSequence(rope.nodePath, nodes);
+  if (pulleyDirectionErrors.length > 0) {
+    isValid = false;
+    for (const e of pulleyDirectionErrors) {
+      errors.push(e.error);
+    }
+  }
+
+  for (const chainNode of rope.nodePath) {
+    const node = nodes.get(chainNode.nodeId);
+    if (node && node.type === 'pulley') {
+      const pulley = node as PulleyNode;
+      if (pulley.sheaveCount && pulley.sheaveCount < 1) {
+        errors.push(`滑轮 "${pulley.label}" 滑轮槽数必须 ≥ 1`);
+        isValid = false;
+      }
+    }
+  }
+
+  return {
+    ropeId: rope.id,
+    nodeOrder,
+    segments,
+    totalLength,
+    isValid,
+    isContinuous: continuity.isContinuous,
+    continuityError: continuity.error,
+    errors,
+    pulleyDirectionErrors,
+    inactivePulleyErrors
+  };
 }
 
 export function validateAllPaths(
@@ -196,20 +301,29 @@ export function validateAllPaths(
 
 export function validateNodes(nodes: Map<string, RopeNode>): ValidationError[] {
   const errors: ValidationError[] = [];
-  const usedNumbers = new Set<number>();
+  const usedNumbers = new Map<number, string[]>();
 
   for (const [id, node] of nodes) {
-    if (usedNumbers.has(node.number)) {
-      errors.push({
-        type: 'node',
-        id,
-        message: `节点编号 ${node.number} 重复（与其他节点冲突）`,
-        severity: 'error'
-      });
-    } else {
-      usedNumbers.add(node.number);
+    if (!usedNumbers.has(node.number)) {
+      usedNumbers.set(node.number, []);
     }
+    usedNumbers.get(node.number)!.push(id);
+  }
 
+  for (const [num, ids] of usedNumbers) {
+    if (ids.length > 1) {
+      for (const id of ids) {
+        errors.push({
+          type: 'node',
+          id,
+          message: `节点编号 ${num} 重复（与其他节点冲突）`,
+          severity: 'error'
+        });
+      }
+    }
+  }
+
+  for (const [id, node] of nodes) {
     if (node.number <= 0) {
       errors.push({
         type: 'node',
@@ -226,6 +340,50 @@ export function validateNodes(nodes: Map<string, RopeNode>): ValidationError[] {
         message: `节点名称不能为空`,
         severity: 'error'
       });
+    }
+
+    if (node.type === 'pulley') {
+      const pulley = node as PulleyNode;
+      if (pulley.sheaveCount !== undefined && pulley.sheaveCount < 1) {
+        errors.push({
+          type: 'node',
+          id,
+          message: `滑轮 "${node.label}" 滑轮槽数必须 ≥ 1`,
+          severity: 'error'
+        });
+      }
+      if (!PULLEY_DIRECTION_LABELS[pulley.direction] === undefined) {
+        errors.push({
+          type: 'node',
+          id,
+          message: `滑轮 "${node.label}" 方向值无效`,
+          severity: 'error'
+        });
+      }
+    }
+
+    if (node.type === 'mast') {
+      const mast = node as unknown as { height?: number };
+      if (mast.height !== undefined && mast.height < 0) {
+        errors.push({
+          type: 'node',
+          id,
+          message: `桅杆 "${node.label}" 高度不能为负数`,
+          severity: 'warning'
+        });
+      }
+    }
+
+    if (node.type === 'mooring') {
+      const mooring = node as unknown as { loadCapacity?: number };
+      if (mooring.loadCapacity !== undefined && mooring.loadCapacity < 0) {
+        errors.push({
+          type: 'node',
+          id,
+          message: `系索点 "${node.label}" 负载能力不能为负数`,
+          severity: 'warning'
+        });
+      }
     }
   }
 
@@ -248,20 +406,20 @@ export function validateRopes(
       });
     }
 
-    if (rope.length <= 0) {
-      errors.push({
-        type: 'rope',
-        id,
-        message: `缆绳 "${rope.label}" 的长度必须大于 0`,
-        severity: 'error'
-      });
-    }
-
     if (!rope.label || rope.label.trim() === '') {
       errors.push({
         type: 'rope',
         id,
         message: `缆绳名称不能为空`,
+        severity: 'error'
+      });
+    }
+
+    if (rope.nodePath.length < 2) {
+      errors.push({
+        type: 'rope',
+        id,
+        message: `缆绳 "${rope.label}" 穿绕路径至少需要 2 个节点`,
         severity: 'error'
       });
     }
@@ -273,6 +431,27 @@ export function validateRopes(
           type: 'path',
           id,
           message: err,
+          severity: 'error'
+        });
+      }
+    }
+
+    if (!path.isContinuous && path.continuityError) {
+      errors.push({
+        type: 'continuity',
+        id,
+        message: `缆绳 "${rope.label}" ${path.continuityError}`,
+        severity: 'error'
+      });
+    }
+
+    for (const seg of path.segments) {
+      if (!seg.valid && seg.error) {
+        errors.push({
+          type: 'segment',
+          id,
+          segmentIndex: seg.segmentIndex,
+          message: `缆绳 "${rope.label}" 第 ${seg.segmentIndex + 1} 段: ${seg.error}`,
           severity: 'error'
         });
       }
@@ -298,15 +477,40 @@ export function canSave(
 }
 
 export function calculateTotalRopeLength(
-  nodes: Map<string, RopeNode>,
+  _nodes: Map<string, RopeNode>,
   ropes: Map<string, RopeData>
 ): number {
-  const paths = validateAllPaths(nodes, ropes);
   let total = 0;
-  for (const [, path] of paths) {
-    if (path.isValid) {
-      total += path.totalLength;
-    }
+  for (const [, rope] of ropes) {
+    total += rope.totalLength;
   }
   return total;
+}
+
+export function recalculateRopeLengths(
+  rope: RopeData,
+  nodes: Map<string, RopeNode>
+): { totalLength: number; segmentLengths: number[] } {
+  const segmentLengths: number[] = [];
+  let totalLength = 0;
+
+  for (let i = 0; i < rope.nodePath.length - 1; i++) {
+    const fromChain = rope.nodePath[i];
+    const toChain = rope.nodePath[i + 1];
+    const fromNode = nodes.get(fromChain.nodeId);
+    const toNode = nodes.get(toChain.nodeId);
+
+    if (!fromNode || !toNode) {
+      segmentLengths.push(0);
+      continue;
+    }
+
+    const fromPos = getNodeEffectivePosition(fromNode, fromChain, true);
+    const toPos = getNodeEffectivePosition(toNode, toChain, false);
+    const length = calculateDistance(fromPos, toPos);
+    segmentLengths.push(length);
+    totalLength += length;
+  }
+
+  return { totalLength, segmentLengths };
 }

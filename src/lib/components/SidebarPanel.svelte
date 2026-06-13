@@ -25,6 +25,17 @@
         return '●';
     }
   }
+
+  function getRopePathSummary(ropeId: string): string {
+    const rope = currentRopes.get(ropeId);
+    if (!rope) return '';
+    const labels: string[] = [];
+    for (const cn of rope.nodePath) {
+      const n = currentNodes.get(cn.nodeId);
+      if (n) labels.push(n.label);
+    }
+    return labels.join(' → ');
+  }
 </script>
 
 <div class="bg-white border-l border-gray-200 flex flex-col h-full">
@@ -140,11 +151,16 @@
                 </span>
               </div>
               <div class="text-xs text-gray-500 mt-1">
-                {rope.length.toFixed(1)}m · {rope.tension}N
-                {#if path && !path.isClosed}
-                  <span class="text-red-500 ml-1">· 断开</span>
-                {/if}
+                总长 {rope.totalLength.toFixed(1)}m · {rope.nodePath.length - 1} 段 · {rope.tension}N
               </div>
+              <div class="text-xs text-gray-400 mt-0.5 truncate">
+                {getRopePathSummary(rope.id)}
+              </div>
+              {#if path && !path.isContinuous}
+                <div class="text-xs text-red-500 mt-0.5">
+                  ⚠ 路径不连续
+                </div>
+              {/if}
             </button>
           {/each}
         {/if}
@@ -189,6 +205,20 @@
         </div>
 
         <div>
+          <h5 class="font-medium text-gray-700 mb-2">偏移点标记</h5>
+          <div class="space-y-2">
+            <div class="flex items-center gap-2">
+              <span class="w-3 h-3 rounded bg-cyan-500"></span>
+              <span class="text-sm text-gray-700">🔵 入点 (Entry) - 缆绳进入节点位置</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="w-3 h-3 rounded bg-red-500"></span>
+              <span class="text-sm text-gray-700">🔴 出点 (Exit) - 缆绳离开节点位置</span>
+            </div>
+          </div>
+        </div>
+
+        <div>
           <h5 class="font-medium text-gray-700 mb-2">滑轮方向</h5>
           <div class="space-y-1 text-sm text-gray-600">
             <div>↻ 顺时针：仅允许向右/向下穿绕</div>
@@ -201,10 +231,12 @@
           <h5 class="font-medium text-blue-800 mb-1">使用说明</h5>
           <ul class="text-xs text-blue-700 space-y-1">
             <li>• 点击「添加节点」后在画布上点击放置</li>
-            <li>• 点击「连接缆绳」后依次点击两个节点</li>
+            <li>• 点击「穿绕缆绳」后依次点击多个节点形成路径链</li>
+            <li>• 选中缆绳后在右侧面板编辑逐段入点/出点偏移</li>
             <li>• 拖拽节点可移动位置，缆绳长度自动更新</li>
             <li>• 红色标识表示存在错误，点击错误项定位</li>
             <li>• 停用的滑轮显示为半透明，不参与路径</li>
+            <li>• 所有修改自动触发校验与长度重算</li>
           </ul>
         </div>
       </div>

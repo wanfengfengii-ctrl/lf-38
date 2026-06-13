@@ -10,21 +10,25 @@ import type {
   Position,
   MastNode,
   PulleyNode,
-  MooringNode
+  MooringNode,
+  PathChainNode,
+  PathChainOffset
 } from '$lib/types';
 import {
   generateId,
   NODE_TYPE_LABELS,
   ROPE_COLORS,
   DEFAULT_ROPE_COLOR,
-  calculateDistance
+  createDefaultPathChainNode,
+  NODE_RADIUS
 } from '$lib/types';
 import {
   validateAll,
   validateAllPaths,
   canSave,
   calculateTotalRopeLength,
-  validateRopePath
+  validateRopePath,
+  recalculateRopeLengths
 } from '$lib/utils/pathValidator';
 
 function createEditorStore() {
@@ -32,10 +36,13 @@ function createEditorStore() {
   const ropes = writable<Map<string, RopeData>>(new Map());
   const selectedNodeId = writable<string | null>(null);
   const selectedRopeId = writable<string | null>(null);
+  const selectedPathNodeIndex = writable<number | null>(null);
   const mode = writable<EditorMode>('select');
   const addingNodeType = writable<NodeType>('mast');
   const nextNodeNumber = writable<number>(1);
-  const ropeSourceId = writable<string | null>(null);
+  const ropeBuildingPath = writable<string[]>([]);
+  const isDirty = writable<boolean>(false);
+  const lastSavedAt = writable<string | null>(null);
 
   const validationErrors = derived<
     [typeof nodes, typeof ropes],
@@ -68,6 +75,10 @@ function createEditorStore() {
   const hasErrors = derived([validationErrors], ([$errors]) => {
     return $errors.filter(e => e.severity === 'error').length > 0;
   });
+
+  function markDirty() {
+    isDirty.set(true);
+  }
 
   function getNextNodeNumber(): number {
     const $nodes = get(nodes);
@@ -144,6 +155,7 @@ function createEditorStore() {
     });
 
     nextNodeNumber.set(number + 1);
+    markDirty();
     return node;
   }
 
@@ -160,14 +172,16 @@ function createEditorStore() {
       }
       return new Map($nodes);
     });
-    refreshRopeLengths();
+    refreshAllRopeLengths();
+    markDirty();
   }
 
   function deleteNode(id: string) {
     ropes.update(($ropes) => {
       const toDelete: string[] = [];
       for (const [ropeId, rope] of $ropes) {
-        if (rope.source === id || rope.target === id) {
+        const hasNode = rope.nodePath.some(cn => cn.nodeId === id);
+        if (hasNode) {
           toDelete.push(ropeId);
         }
       }
@@ -183,7 +197,8 @@ function createEditorStore() {
     });
 
     selectedNodeId.set(null);
-    ropeSourceId.set(null);
+    ropeBuildingPath.set([]);
+    markDirty();
   }
 
   function moveNode(id: string, position: Position) {
@@ -194,47 +209,209 @@ function createEditorStore() {
       }
       return new Map($nodes);
     });
-    refreshRopeLengths();
+    refreshAllRopeLengths();
+    markDirty();
   }
 
   function getRopeColor(index: number): string {
     return ROPE_COLORS[index % ROPE_COLORS.length] || DEFAULT_ROPE_COLOR;
   }
 
-  function addRope(sourceId: string, targetId: string): RopeData | null {
+  function createRopeFromPath(nodeIds: string[]): RopeData | null {
     const $nodes = get(nodes);
     const $ropes = get(ropes);
 
-    const sourceNode = $nodes.get(sourceId);
-    const targetNode = $nodes.get(targetId);
+    if (nodeIds.length < 2) return null;
 
-    if (!sourceNode || !targetNode) return null;
-    if (sourceId === targetId) return null;
+    const nodePath: PathChainNode[] = nodeIds.map(nid => createDefaultPathChainNode(nid));
 
-    const length = calculateDistance(sourceNode.position, targetNode.position);
-
-    const rope: RopeData = {
+    const tempRope: RopeData = {
       id: generateId(),
       label: `缆绳 ${$ropes.size + 1}`,
-      source: sourceId,
-      target: targetId,
+      nodePath,
       tension: 100,
-      length,
+      totalLength: 0,
+      segmentLengths: [],
       color: getRopeColor($ropes.size),
       description: ''
     };
 
-    const path = validateRopePath(rope, $nodes, $ropes);
-    if (!path.isValid) {
-      return null;
-    }
+    const path = validateRopePath(tempRope, $nodes, $ropes);
+    tempRope.totalLength = path.totalLength;
+    tempRope.segmentLengths = path.segments.map(s => s.length);
 
     ropes.update(($r) => {
-      $r.set(rope.id, rope);
+      $r.set(tempRope.id, tempRope);
       return new Map($r);
     });
 
+    markDirty();
+    return tempRope;
+  }
+
+  function startBuildingRope(startNodeId: string) {
+    ropeBuildingPath.set([startNodeId]);
+    mode.set('addRope');
+  }
+
+  function addNodeToBuildingPath(nodeId: string): boolean {
+    const currentPath = get(ropeBuildingPath);
+    if (currentPath.length === 0) return false;
+    if (currentPath[currentPath.length - 1] === nodeId) return false;
+
+    const $nodes = get(nodes);
+    const node = $nodes.get(nodeId);
+    if (!node) return false;
+
+    ropeBuildingPath.set([...currentPath, nodeId]);
+    return true;
+  }
+
+  function finishBuildingRope(): RopeData | null {
+    const path = get(ropeBuildingPath);
+    if (path.length < 2) {
+      cancelBuildingRope();
+      return null;
+    }
+    const rope = createRopeFromPath(path);
+    cancelBuildingRope();
     return rope;
+  }
+
+  function cancelBuildingRope() {
+    ropeBuildingPath.set([]);
+    mode.set('select');
+  }
+
+  function addRopeNode(ropeId: string, nodeId: string, insertIndex?: number) {
+    const $nodes = get(nodes);
+    const node = $nodes.get(nodeId);
+    if (!node) return;
+
+    ropes.update(($ropes) => {
+      const rope = $ropes.get(ropeId);
+      if (!rope) return $ropes;
+
+      const alreadyExists = rope.nodePath.some(cn => cn.nodeId === nodeId);
+      if (alreadyExists) return $ropes;
+
+      const newChainNode = createDefaultPathChainNode(nodeId);
+      const newNodePath = [...rope.nodePath];
+
+      if (insertIndex !== undefined && insertIndex >= 0 && insertIndex < newNodePath.length) {
+        newNodePath.splice(insertIndex, 0, newChainNode);
+      } else {
+        newNodePath.push(newChainNode);
+      }
+
+      const updatedRope = { ...rope, nodePath: newNodePath };
+      const recalc = recalculateRopeLengths(updatedRope, $nodes);
+      updatedRope.totalLength = recalc.totalLength;
+      updatedRope.segmentLengths = recalc.segmentLengths;
+
+      $ropes.set(ropeId, updatedRope);
+      return new Map($ropes);
+    });
+    markDirty();
+  }
+
+  function removeRopeNode(ropeId: string, pathIndex: number) {
+    ropes.update(($ropes) => {
+      const rope = $ropes.get(ropeId);
+      if (!rope) return $ropes;
+      if (rope.nodePath.length <= 2) return $ropes;
+      if (pathIndex < 0 || pathIndex >= rope.nodePath.length) return $ropes;
+
+      const newNodePath = rope.nodePath.filter((_, i) => i !== pathIndex);
+      const updatedRope = { ...rope, nodePath: newNodePath };
+      const recalc = recalculateRopeLengths(updatedRope, get(nodes));
+      updatedRope.totalLength = recalc.totalLength;
+      updatedRope.segmentLengths = recalc.segmentLengths;
+
+      $ropes.set(ropeId, updatedRope);
+      return new Map($ropes);
+    });
+    markDirty();
+  }
+
+  function reorderRopeNode(ropeId: string, fromIndex: number, toIndex: number) {
+    ropes.update(($ropes) => {
+      const rope = $ropes.get(ropeId);
+      if (!rope) return $ropes;
+      if (fromIndex < 0 || fromIndex >= rope.nodePath.length) return $ropes;
+      if (toIndex < 0 || toIndex >= rope.nodePath.length) return $ropes;
+      if (fromIndex === toIndex) return $ropes;
+
+      const newNodePath = [...rope.nodePath];
+      const [removed] = newNodePath.splice(fromIndex, 1);
+      newNodePath.splice(toIndex, 0, removed);
+
+      const updatedRope = { ...rope, nodePath: newNodePath };
+      const recalc = recalculateRopeLengths(updatedRope, get(nodes));
+      updatedRope.totalLength = recalc.totalLength;
+      updatedRope.segmentLengths = recalc.segmentLengths;
+
+      $ropes.set(ropeId, updatedRope);
+      return new Map($ropes);
+    });
+    markDirty();
+  }
+
+  function updatePathChainNode(
+    ropeId: string,
+    pathIndex: number,
+    updates: Partial<PathChainNode>
+  ) {
+    ropes.update(($ropes) => {
+      const rope = $ropes.get(ropeId);
+      if (!rope) return $ropes;
+      if (pathIndex < 0 || pathIndex >= rope.nodePath.length) return $ropes;
+
+      const newNodePath = rope.nodePath.map((cn, i) =>
+        i === pathIndex ? { ...cn, ...updates } : cn
+      );
+
+      const updatedRope = { ...rope, nodePath: newNodePath };
+      const recalc = recalculateRopeLengths(updatedRope, get(nodes));
+      updatedRope.totalLength = recalc.totalLength;
+      updatedRope.segmentLengths = recalc.segmentLengths;
+
+      $ropes.set(ropeId, updatedRope);
+      return new Map($ropes);
+    });
+    markDirty();
+  }
+
+  function updatePathNodeOffset(
+    ropeId: string,
+    pathIndex: number,
+    isExit: boolean,
+    offset: PathChainOffset
+  ) {
+    ropes.update(($ropes) => {
+      const rope = $ropes.get(ropeId);
+      if (!rope) return $ropes;
+      if (pathIndex < 0 || pathIndex >= rope.nodePath.length) return $ropes;
+
+      const chainNode = rope.nodePath[pathIndex];
+      const newChainNode = {
+        ...chainNode,
+        ...(isExit ? { exitOffset: offset } : { entryOffset: offset })
+      };
+
+      const newNodePath = rope.nodePath.map((cn, i) =>
+        i === pathIndex ? newChainNode : cn
+      );
+
+      const updatedRope = { ...rope, nodePath: newNodePath };
+      const recalc = recalculateRopeLengths(updatedRope, get(nodes));
+      updatedRope.totalLength = recalc.totalLength;
+      updatedRope.segmentLengths = recalc.segmentLengths;
+
+      $ropes.set(ropeId, updatedRope);
+      return new Map($ropes);
+    });
+    markDirty();
   }
 
   function updateRope(id: string, updates: Partial<RopeData>) {
@@ -245,6 +422,7 @@ function createEditorStore() {
       }
       return new Map($ropes);
     });
+    markDirty();
   }
 
   function deleteRope(id: string) {
@@ -253,18 +431,20 @@ function createEditorStore() {
       return new Map($ropes);
     });
     selectedRopeId.set(null);
+    selectedPathNodeIndex.set(null);
+    markDirty();
   }
 
-  function refreshRopeLengths() {
+  function refreshAllRopeLengths() {
     const $nodes = get(nodes);
     ropes.update(($ropes) => {
       for (const [id, rope] of $ropes) {
-        const sourceNode = $nodes.get(rope.source);
-        const targetNode = $nodes.get(rope.target);
-        if (sourceNode && targetNode) {
-          const length = calculateDistance(sourceNode.position, targetNode.position);
-          $ropes.set(id, { ...rope, length });
-        }
+        const recalc = recalculateRopeLengths(rope, $nodes);
+        $ropes.set(id, {
+          ...rope,
+          totalLength: recalc.totalLength,
+          segmentLengths: recalc.segmentLengths
+        });
       }
       return new Map($ropes);
     });
@@ -273,39 +453,34 @@ function createEditorStore() {
   function setMode(newMode: EditorMode) {
     mode.set(newMode);
     if (newMode !== 'addRope') {
-      ropeSourceId.set(null);
+      ropeBuildingPath.set([]);
+    }
+    if (newMode !== 'select' && newMode !== 'edit' && newMode !== 'extendPath') {
+      selectedPathNodeIndex.set(null);
     }
   }
 
   function selectNode(id: string | null) {
     selectedNodeId.set(id);
     selectedRopeId.set(null);
+    selectedPathNodeIndex.set(null);
   }
 
   function selectRope(id: string | null) {
     selectedRopeId.set(id);
     selectedNodeId.set(null);
+    selectedPathNodeIndex.set(null);
+  }
+
+  function selectPathNodeIndex(index: number | null) {
+    selectedPathNodeIndex.set(index);
   }
 
   function clearSelection() {
     selectedNodeId.set(null);
     selectedRopeId.set(null);
-    ropeSourceId.set(null);
-  }
-
-  function startRopeFromNode(nodeId: string) {
-    ropeSourceId.set(nodeId);
-    mode.set('addRope');
-  }
-
-  function completeRope(targetId: string): RopeData | null {
-    const sourceId = get(ropeSourceId);
-    if (!sourceId) return null;
-
-    const result = addRope(sourceId, targetId);
-    ropeSourceId.set(null);
-    mode.set('select');
-    return result;
+    selectedPathNodeIndex.set(null);
+    ropeBuildingPath.set([]);
   }
 
   function clearAll() {
@@ -313,8 +488,11 @@ function createEditorStore() {
     ropes.set(new Map());
     selectedNodeId.set(null);
     selectedRopeId.set(null);
+    selectedPathNodeIndex.set(null);
     nextNodeNumber.set(1);
-    ropeSourceId.set(null);
+    ropeBuildingPath.set([]);
+    isDirty.set(false);
+    lastSavedAt.set(null);
   }
 
   function exportScheme(): string {
@@ -340,6 +518,18 @@ function createEditorStore() {
 
       const newRopes = new Map<string, RopeData>();
       for (const rope of data.ropes) {
+        if (!rope.nodePath) {
+          if (rope.source && rope.target) {
+            rope.nodePath = [
+              createDefaultPathChainNode(rope.source),
+              createDefaultPathChainNode(rope.target)
+            ];
+          } else {
+            continue;
+          }
+        }
+        if (rope.totalLength === undefined) rope.totalLength = 0;
+        if (rope.segmentLengths === undefined) rope.segmentLengths = [];
         newRopes.set(rope.id, rope);
       }
 
@@ -351,6 +541,7 @@ function createEditorStore() {
       ropes.set(newRopes);
       clearSelection();
       nextNodeNumber.set(getNextNodeNumber());
+      isDirty.set(false);
       return true;
     } catch {
       return false;
@@ -370,6 +561,8 @@ function createEditorStore() {
         savedAt: new Date().toISOString()
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      isDirty.set(false);
+      lastSavedAt.set(data.savedAt);
       return true;
     } catch {
       return false;
@@ -380,6 +573,8 @@ function createEditorStore() {
     try {
       const json = localStorage.getItem(STORAGE_KEY);
       if (!json) return false;
+      const data = JSON.parse(json);
+      lastSavedAt.set(data.savedAt || null);
       return importScheme(json);
     } catch {
       return false;
@@ -397,6 +592,7 @@ function createEditorStore() {
   function clearSavedScheme(): void {
     try {
       localStorage.removeItem(STORAGE_KEY);
+      lastSavedAt.set(null);
     } catch {
       // ignore
     }
@@ -410,6 +606,8 @@ function createEditorStore() {
       }
       return new Map($nodes);
     });
+    refreshAllRopeLengths();
+    markDirty();
   }
 
   function setPulleyDirection(id: string, direction: PulleyDirection) {
@@ -420,6 +618,8 @@ function createEditorStore() {
       }
       return new Map($nodes);
     });
+    refreshAllRopeLengths();
+    markDirty();
   }
 
   function loadDemoData() {
@@ -506,78 +706,35 @@ function createEditorStore() {
     const demoRopes: RopeData[] = [
       {
         id: 'demo-rope-1',
-        label: '主帆索',
-        source: 'demo-mooring-1',
-        target: 'demo-pulley-1',
+        label: '主帆穿绕索',
+        nodePath: [
+          { nodeId: 'demo-mooring-1', entryOffset: { dx: 0, dy: 0 }, exitOffset: { dx: 0, dy: -NODE_RADIUS } },
+          { nodeId: 'demo-pulley-1', entryOffset: { dx: -NODE_RADIUS * 0.6, dy: NODE_RADIUS * 0.3 }, exitOffset: { dx: NODE_RADIUS * 0.6, dy: -NODE_RADIUS * 0.3 } },
+          { nodeId: 'demo-mast-1', entryOffset: { dx: 0, dy: NODE_RADIUS }, exitOffset: { dx: NODE_RADIUS * 0.5, dy: 0 } },
+          { nodeId: 'demo-mast-2', entryOffset: { dx: -NODE_RADIUS * 0.5, dy: 0 }, exitOffset: { dx: 0, dy: NODE_RADIUS } },
+          { nodeId: 'demo-pulley-2', entryOffset: { dx: 0, dy: -NODE_RADIUS }, exitOffset: { dx: NODE_RADIUS * 0.6, dy: NODE_RADIUS * 0.3 } },
+          { nodeId: 'demo-mooring-2', entryOffset: { dx: -NODE_RADIUS * 0.5, dy: -NODE_RADIUS * 0.3 }, exitOffset: { dx: 0, dy: 0 } }
+        ],
         tension: 500,
-        length: calculateDistance(
-          { x: 200, y: 500 },
-          { x: 300, y: 300 }
-        ),
+        totalLength: 0,
+        segmentLengths: [],
         color: '#CD853F',
-        description: '连接左舷系缆桩到前桅滑车'
-      },
-      {
-        id: 'demo-rope-2',
-        label: '连接索 A',
-        source: 'demo-pulley-1',
-        target: 'demo-mast-1',
-        tension: 300,
-        length: calculateDistance(
-          { x: 300, y: 300 },
-          { x: 400, y: 150 }
-        ),
-        color: '#4682B4',
-        description: '前桅滑车到前桅'
-      },
-      {
-        id: 'demo-rope-3',
-        label: '横桁索',
-        source: 'demo-mast-1',
-        target: 'demo-mast-2',
-        tension: 400,
-        length: calculateDistance(
-          { x: 400, y: 150 },
-          { x: 600, y: 150 }
-        ),
-        color: '#9932CC',
-        description: '两桅之间的横拉索'
-      },
-      {
-        id: 'demo-rope-4',
-        label: '连接索 B',
-        source: 'demo-mast-2',
-        target: 'demo-pulley-2',
-        tension: 350,
-        length: calculateDistance(
-          { x: 600, y: 150 },
-          { x: 500, y: 350 }
-        ),
-        color: '#228B22',
-        description: '主桅到主桅滑车'
-      },
-      {
-        id: 'demo-rope-5',
-        label: '副帆索',
-        source: 'demo-pulley-2',
-        target: 'demo-mooring-2',
-        tension: 450,
-        length: calculateDistance(
-          { x: 500, y: 350 },
-          { x: 600, y: 500 }
-        ),
-        color: '#DC143C',
-        description: '主桅滑车到右舷系缆桩'
+        description: '完整的穿绕路径：左舷系缆桩 → 滑轮A → 主桅杆1 → 主桅杆2 → 滑轮B → 右舷系缆桩'
       }
     ];
 
     const newRopes = new Map<string, RopeData>();
+    const $nodesVal = newNodes;
     for (const rope of demoRopes) {
+      const recalc = recalculateRopeLengths(rope, $nodesVal);
+      rope.totalLength = recalc.totalLength;
+      rope.segmentLengths = recalc.segmentLengths;
       newRopes.set(rope.id, rope);
     }
     ropes.set(newRopes);
 
     nextNodeNumber.set(8);
+    isDirty.set(false);
   }
 
   return {
@@ -585,10 +742,13 @@ function createEditorStore() {
     ropes,
     selectedNodeId,
     selectedRopeId,
+    selectedPathNodeIndex,
     mode,
     addingNodeType,
     nextNodeNumber,
-    ropeSourceId,
+    ropeBuildingPath,
+    isDirty,
+    lastSavedAt,
     validationErrors,
     ropePaths,
     totalRopeLength,
@@ -598,16 +758,24 @@ function createEditorStore() {
     updateNode,
     deleteNode,
     moveNode,
-    addRope,
+    createRopeFromPath,
+    startBuildingRope,
+    addNodeToBuildingPath,
+    finishBuildingRope,
+    cancelBuildingRope,
+    addRopeNode,
+    removeRopeNode,
+    reorderRopeNode,
+    updatePathChainNode,
+    updatePathNodeOffset,
     updateRope,
     deleteRope,
-    refreshRopeLengths,
+    refreshAllRopeLengths,
     setMode,
     selectNode,
     selectRope,
+    selectPathNodeIndex,
     clearSelection,
-    startRopeFromNode,
-    completeRope,
     clearAll,
     exportScheme,
     importScheme,

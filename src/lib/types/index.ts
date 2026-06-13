@@ -35,13 +35,26 @@ export interface MooringNode extends NodeData {
 
 export type RopeNode = MastNode | PulleyNode | MooringNode;
 
+export interface PathChainOffset {
+  dx: number;
+  dy: number;
+}
+
+export interface PathChainNode {
+  nodeId: string;
+  entryOffset: PathChainOffset;
+  exitOffset: PathChainOffset;
+  entryAngle?: number;
+  exitAngle?: number;
+}
+
 export interface RopeData {
   id: string;
   label: string;
-  source: string;
-  target: string;
+  nodePath: PathChainNode[];
   tension: number;
-  length: number;
+  totalLength: number;
+  segmentLengths: number[];
   color?: string;
   description?: string;
 }
@@ -49,18 +62,27 @@ export interface RopeData {
 export interface PathSegment {
   fromNode: string;
   toNode: string;
+  fromPosition: Position;
+  toPosition: Position;
+  fromExitOffset: PathChainOffset;
+  toEntryOffset: PathChainOffset;
   length: number;
   valid: boolean;
   error?: string;
+  segmentIndex: number;
 }
 
 export interface RopePath {
   ropeId: string;
+  nodeOrder: string[];
   segments: PathSegment[];
   totalLength: number;
-  isClosed: boolean;
   isValid: boolean;
+  isContinuous: boolean;
+  continuityError?: string;
   errors: string[];
+  pulleyDirectionErrors: { nodeId: string; error: string }[];
+  inactivePulleyErrors: { nodeId: string; error: string }[];
 }
 
 export interface EditorState {
@@ -68,18 +90,22 @@ export interface EditorState {
   ropes: Map<string, RopeData>;
   selectedNodeId: string | null;
   selectedRopeId: string | null;
+  selectedPathNodeIndex: number | null;
   nextNodeNumber: number;
   validationErrors: ValidationError[];
+  isDirty: boolean;
+  lastSavedAt: string | null;
 }
 
 export interface ValidationError {
-  type: 'node' | 'rope' | 'path';
+  type: 'node' | 'rope' | 'path' | 'segment' | 'continuity';
   id: string;
+  segmentIndex?: number;
   message: string;
   severity: 'error' | 'warning';
 }
 
-export type EditorMode = 'select' | 'addNode' | 'addRope' | 'delete' | 'edit';
+export type EditorMode = 'select' | 'addNode' | 'addRope' | 'delete' | 'edit' | 'extendPath';
 
 export const NODE_TYPE_LABELS: Record<NodeType, string> = {
   mast: '桅杆',
@@ -114,6 +140,7 @@ export const DEFAULT_ROPE_COLOR = '#CD853F';
 
 export const NODE_RADIUS = 25;
 export const EDGE_WIDTH = 3;
+export const DEFAULT_OFFSET = 0;
 
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -123,4 +150,34 @@ export function calculateDistance(p1: Position, p2: Position): number {
   const dx = p2.x - p1.x;
   const dy = p2.y - p1.y;
   return Math.sqrt(dx * dx + dy * dy);
+}
+
+export function applyOffset(position: Position, offset: PathChainOffset): Position {
+  return {
+    x: position.x + offset.dx,
+    y: position.y + offset.dy
+  };
+}
+
+export function createDefaultPathChainNode(nodeId: string): PathChainNode {
+  return {
+    nodeId,
+    entryOffset: { dx: DEFAULT_OFFSET, dy: DEFAULT_OFFSET },
+    exitOffset: { dx: DEFAULT_OFFSET, dy: DEFAULT_OFFSET }
+  };
+}
+
+export function calculateAngle(from: Position, to: Position): number {
+  return Math.atan2(to.y - from.y, to.x - from.x);
+}
+
+export function calculatePulleyWrapAngle(
+  entryAngle: number,
+  exitAngle: number,
+  pulleyDirection: PulleyDirection
+): number {
+  let diff = exitAngle - entryAngle;
+  while (diff > Math.PI) diff -= 2 * Math.PI;
+  while (diff < -Math.PI) diff += 2 * Math.PI;
+  return Math.abs(diff);
 }

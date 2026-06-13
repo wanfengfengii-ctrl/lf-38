@@ -7,7 +7,7 @@
   const {
     mode,
     addingNodeType,
-    ropeSourceId,
+    ropeBuildingPath,
     clearSelection,
     clearAll,
     loadDemoData,
@@ -18,21 +18,25 @@
     nodes,
     ropes,
     setMode,
-    saveToLocalStorage
+    saveToLocalStorage,
+    isDirty,
+    lastSavedAt
   } = store;
 
   let currentMode = $derived($mode ?? 'select');
   let currentAddingNodeType = $derived($addingNodeType ?? 'mast');
-  let currentRopeSourceId = $derived($ropeSourceId ?? null);
+  let currentRopeBuildingPath = $derived($ropeBuildingPath ?? []);
   let currentNodes = $derived($nodes ?? new Map());
   let currentRopes = $derived($ropes ?? new Map());
   let currentTotalLength = $derived($totalRopeLength ?? 0);
   let currentCanSave = $derived($canSaveScheme ?? false);
+  let currentIsDirty = $derived($isDirty ?? false);
+  let currentLastSavedAt = $derived($lastSavedAt ?? null);
 
   const modes: { value: EditorMode; label: string; icon: string }[] = [
     { value: 'select', label: '选择', icon: '↖' },
     { value: 'addNode', label: '添加节点', icon: '⊕' },
-    { value: 'addRope', label: '连接缆绳', icon: '〰' },
+    { value: 'addRope', label: '穿绕缆绳', icon: '〰' },
     { value: 'delete', label: '删除', icon: '✕' }
   ];
 
@@ -113,12 +117,30 @@
     }
     loadDemoData();
   }
+
+  function formatSavedAt(iso: string): string {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch {
+      return '';
+    }
+  }
 </script>
 
 <div class="bg-white border-b border-gray-200 p-3">
   <div class="flex items-center justify-between flex-wrap gap-3">
     <div class="flex items-center gap-2">
-      <h1 class="text-xl font-bold text-gray-800">⚓ 古船缆绳路径编辑器</h1>
+      <h1 class="text-xl font-bold text-gray-800">⚓ 古船缆绳穿绕路径编辑器</h1>
+      {#if currentIsDirty}
+        <span class="text-xs px-2 py-0.5 bg-yellow-100 text-yellow-700 rounded-full">
+          ● 未保存
+        </span>
+      {:else if currentLastSavedAt}
+        <span class="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded-full">
+          ✓ 已保存 {formatSavedAt(currentLastSavedAt)}
+        </span>
+      {/if}
     </div>
 
     <div class="flex items-center gap-2">
@@ -151,10 +173,16 @@
         </select>
       {/if}
 
-      {#if currentMode === 'addRope' && currentRopeSourceId}
-        <span class="text-sm text-blue-600 bg-blue-50 px-3 py-1.5 rounded">
-          点击目标节点完成连接
-        </span>
+      {#if currentMode === 'addRope'}
+        {#if currentRopeBuildingPath.length === 0}
+          <span class="text-sm text-blue-600 bg-blue-50 px-3 py-1.5 rounded">
+            点击起始节点开始穿绕
+          </span>
+        {:else}
+          <span class="text-sm text-green-600 bg-green-50 px-3 py-1.5 rounded">
+            已选 {currentRopeBuildingPath.length} 个节点 · 点击画布空白或按完成按钮结束
+          </span>
+        {/if}
       {/if}
     </div>
 
@@ -164,7 +192,7 @@
         <span class="mx-2">|</span>
         <span class="font-medium">缆绳:</span> {currentRopes.size}
         <span class="mx-2">|</span>
-        <span class="font-medium">总长度:</span> {currentTotalLength.toFixed(1)}m
+        <span class="font-medium">总长:</span> {currentTotalLength.toFixed(1)}m
       </div>
 
       <div class="h-6 w-px bg-gray-300"></div>
@@ -202,7 +230,7 @@
             : 'bg-red-500 text-white hover:bg-red-600'
         }"
       >
-        {currentCanSave ? '💾 保存' : '✗ 有错误'}
+        {currentCanSave ? (currentIsDirty ? '💾 保存' : '✓ 已保存') : '✗ 有错误'}
       </button>
 
       <button
@@ -229,9 +257,43 @@
       <span class="font-medium">{NODE_TYPE_LABELS[currentAddingNodeType]}</span>
     </div>
   {:else if currentMode === 'addRope'}
-    <div class="mt-2 text-sm text-gray-600">
-      提示：先点击起始节点，再点击目标节点创建缆绳连接
+    <div class="mt-2 text-sm text-gray-600 flex items-center gap-2">
+      <span>
+        提示：依次点击节点创建穿绕路径，支持经过多个桅杆/滑轮/系索点
+      </span>
+      {#if currentRopeBuildingPath.length >= 2}
+        <button
+          type="button"
+          onclick={() => store.finishBuildingRope()}
+          class="px-2 py-0.5 text-xs bg-green-500 text-white rounded hover:bg-green-600"
+        >
+          ✓ 完成穿绕
+        </button>
+        <button
+          type="button"
+          onclick={() => store.cancelBuildingRope()}
+          class="px-2 py-0.5 text-xs bg-gray-400 text-white rounded hover:bg-gray-500"
+        >
+          取消
+        </button>
+      {/if}
     </div>
+    {#if currentRopeBuildingPath.length > 0}
+      <div class="mt-1 flex items-center gap-1 flex-wrap">
+        <span class="text-xs text-gray-500">当前路径：</span>
+        {#each currentRopeBuildingPath as nid, idx}
+          {@const n = currentNodes.get(nid)}
+          {#if n}
+            <span class="text-xs bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">
+              {n.label}
+            </span>
+            {#if idx < currentRopeBuildingPath.length - 1}
+              <span class="text-gray-400 text-xs">→</span>
+            {/if}
+          {/if}
+        {/each}
+      </div>
+    {/if}
   {:else if currentMode === 'delete'}
     <div class="mt-2 text-sm text-red-600">
       警告：点击节点或缆绳将其删除

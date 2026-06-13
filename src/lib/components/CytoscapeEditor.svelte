@@ -2,8 +2,8 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import cytoscape, { type ElementDefinition, type Core } from 'cytoscape';
   import { editorStore } from '$lib/stores/editorStore';
-  import type { RopeNode, RopeData, RopePath } from '$lib/types';
-  import { NODE_TYPE_COLORS, NODE_RADIUS, EDGE_WIDTH } from '$lib/types';
+  import type { RopeNode, RopeData, RopePath, PathSegment } from '$lib/types';
+  import { NODE_TYPE_COLORS, NODE_RADIUS, EDGE_WIDTH, applyOffset } from '$lib/types';
 
   let container: HTMLDivElement;
   let cy: Core | null = null;
@@ -16,28 +16,33 @@
     selectNode,
     selectRope,
     addNode,
-    completeRope,
-    startRopeFromNode,
+    addNodeToBuildingPath,
+    finishBuildingRope,
+    startBuildingRope,
+    cancelBuildingRope,
     deleteNode,
     deleteRope,
     mode,
     addingNodeType,
     selectedNodeId,
     selectedRopeId,
-    ropeSourceId,
+    ropeBuildingPath,
     ropePaths,
     nodes,
-    ropes
+    ropes,
+    selectedPathNodeIndex,
+    selectPathNodeIndex
   } = store;
 
   let currentMode = $derived($mode ?? 'select');
   let currentAddingNodeType = $derived($addingNodeType ?? 'mast');
   let currentSelectedNodeId = $derived($selectedNodeId ?? null);
   let currentSelectedRopeId = $derived($selectedRopeId ?? null);
-  let currentRopeSourceId = $derived($ropeSourceId ?? null);
+  let currentRopeBuildingPath = $derived($ropeBuildingPath ?? []);
   let currentRopePaths = $derived($ropePaths ?? new Map());
   let currentNodes = $derived($nodes ?? new Map());
   let currentRopes = $derived($ropes ?? new Map());
+  let currentSelectedPathNodeIndex = $derived($selectedPathNodeIndex ?? null);
 
   function getNodeStyle(node: RopeNode, isSelected: boolean, hasError: boolean) {
     const baseColor = NODE_TYPE_COLORS[node.type];
@@ -53,15 +58,21 @@
     };
   }
 
-  function getEdgeStyle(rope: RopeData, path: RopePath | undefined, isSelected: boolean) {
-    const hasError = !path?.isValid;
+  function getEdgeStyle(
+    rope: RopeData,
+    segment: PathSegment,
+    path: RopePath | undefined,
+    isSelected: boolean
+  ) {
+    const hasError = !path?.isValid || !segment.valid;
     const color = hasError ? '#DC143C' : (rope.color || '#CD853F');
+    const isContinuous = path?.isContinuous ?? true;
 
     return {
       'line-color': color,
       'width': isSelected ? EDGE_WIDTH + 2 : EDGE_WIDTH,
       'opacity': hasError ? 0.6 : 1,
-      'line-style': !path?.isClosed ? 'dashed' : 'solid'
+      'line-style': !isContinuous ? 'dashed' : 'solid'
     };
   }
 
@@ -92,25 +103,123 @@
       });
     }
 
-    for (const [id, rope] of ropesData) {
-      const isSelected = selectedRope === id;
-      const path = paths.get(id);
-      const hasError = errors.ropeErrors.has(id);
+    for (const [ropeId, rope] of ropesData) {
+      const isSelected = selectedRope === ropeId;
+      const path = paths.get(ropeId);
+      const hasError = errors.ropeErrors.has(ropeId);
 
-      elements.push({
-        group: 'edges',
-        data: {
-          id,
-          source: rope.source,
-          target: rope.target,
-          label: `${rope.label}\n${rope.length.toFixed(1)}m`,
-          tension: rope.tension,
-          hasError,
-          isValid: path?.isValid ?? true,
-          isClosed: path?.isClosed ?? true
-        },
-        style: getEdgeStyle(rope, path, isSelected)
-      });
+      const segments = path?.segments ?? [];
+      for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i];
+        const segId = `${ropeId}-seg-${i}`;
+
+        elements.push({
+          group: 'edges',
+          data: {
+            id: segId,
+            ropeId,
+            segmentIndex: i,
+            source: segment.fromNode,
+            target: segment.toNode,
+            label: `${rope.label} · ${i + 1}\n${segment.length.toFixed(1)}m`,
+            tension: rope.tension,
+            hasError: hasError || !segment.valid,
+            isValid: path?.isValid ?? true,
+            isContinuous: path?.isContinuous ?? true
+          },
+          style: getEdgeStyle(rope, segment, path, isSelected)
+        });
+      }
+
+      for (let i = 0; i < rope.nodePath.length; i++) {
+        const chainNode = rope.nodePath[i];
+        const node = nodesData.get(chainNode.nodeId);
+        if (!node) continue;
+
+        const entryPos = applyOffset(node.position, chainNode.entryOffset);
+        const exitPos = applyOffset(node.position, chainNode.exitOffset);
+        const isPathNodeSelected = isSelected && currentSelectedPathNodeIndex === i;
+
+        if (i > 0) {
+          elements.push({
+            group: 'nodes',
+            data: {
+              id: `${ropeId}-entry-${i}`,
+              parentNodeId: node.id,
+              ropeId,
+              pathNodeIndex: i,
+              isEntryPoint: true,
+              label: '',
+              type: 'offsetPoint'
+            },
+            position: entryPos,
+            style: {
+              'background-color': isPathNodeSelected ? '#FFD700' : '#00CED1',
+              'background-opacity': isSelected ? 1 : 0.6,
+              'border-color': '#fff',
+              'border-width': 2,
+              'width': 12,
+              'height': 12,
+              'shape': 'triangle',
+              'label': ''
+            }
+          });
+        }
+
+        if (i < rope.nodePath.length - 1) {
+          elements.push({
+            group: 'nodes',
+            data: {
+              id: `${ropeId}-exit-${i}`,
+              parentNodeId: node.id,
+              ropeId,
+              pathNodeIndex: i,
+              isExitPoint: true,
+              label: '',
+              type: 'offsetPoint'
+            },
+            position: exitPos,
+            style: {
+              'background-color': isPathNodeSelected ? '#FFD700' : '#FF6347',
+              'background-opacity': isSelected ? 1 : 0.6,
+              'border-color': '#fff',
+              'border-width': 2,
+              'width': 12,
+              'height': 12,
+              'shape': 'triangle',
+              'label': ''
+            }
+          });
+        }
+      }
+    }
+
+    if (currentMode === 'addRope' && currentRopeBuildingPath.length > 0) {
+      for (let i = 0; i < currentRopeBuildingPath.length; i++) {
+        const nodeId = currentRopeBuildingPath[i];
+        const node = nodesData.get(nodeId);
+        if (!node) continue;
+
+        if (i > 0) {
+          const prevNodeId = currentRopeBuildingPath[i - 1];
+          elements.push({
+            group: 'edges',
+            data: {
+              id: `preview-seg-${i}`,
+              source: prevNodeId,
+              target: nodeId,
+              label: `预览 ${i}`,
+              isPreview: true
+            },
+            style: {
+              'line-color': '#32CD32',
+              'width': EDGE_WIDTH,
+              'opacity': 0.7,
+              'line-style': 'dashed'
+            }
+          });
+        }
+      }
     }
 
     return elements;
@@ -146,6 +255,12 @@
             nodeErrors.add(seg.toNode);
           }
         }
+        for (const e of path.inactivePulleyErrors) {
+          nodeErrors.add(e.nodeId);
+        }
+        for (const e of path.pulleyDirectionErrors) {
+          nodeErrors.add(e.nodeId);
+        }
       }
     }
 
@@ -156,7 +271,14 @@
     if (!cy) return;
 
     const errors = collectErrors(currentNodes, currentRopes, currentRopePaths);
-    const elements = buildElements(currentNodes, currentRopes, currentRopePaths, currentSelectedNodeId, currentSelectedRopeId, errors);
+    const elements = buildElements(
+      currentNodes,
+      currentRopes,
+      currentRopePaths,
+      currentSelectedNodeId,
+      currentSelectedRopeId,
+      errors
+    );
 
     cy.elements().remove();
     cy.add(elements);
@@ -165,7 +287,7 @@
       cy.$(`#${currentSelectedNodeId}`).select();
     }
     if (currentSelectedRopeId) {
-      cy.$(`#${currentSelectedRopeId}`).select();
+      cy.elements(`[ropeId = "${currentSelectedRopeId}"]`).select();
     }
   }
 
@@ -179,41 +301,68 @@
       } else if (currentMode === 'select') {
         selectNode(null);
         selectRope(null);
+        selectPathNodeIndex(null);
       } else if (currentMode === 'addRope') {
-        mode.set('select');
+        if (currentRopeBuildingPath.length >= 2) {
+          finishBuildingRope();
+        } else {
+          cancelBuildingRope();
+        }
       }
     }
   }
 
   function handleNodeClick(event: cytoscape.EventObject) {
     const nodeId = event.target.id();
+    const data = event.target.data();
+
+    if (data.type === 'offsetPoint') {
+      if (currentMode === 'select' && data.ropeId) {
+        selectRope(data.ropeId);
+        selectPathNodeIndex(data.pathNodeIndex);
+      }
+      return;
+    }
 
     if (currentMode === 'delete') {
       deleteNode(nodeId);
     } else if (currentMode === 'addRope') {
-      if (currentRopeSourceId) {
-        if (currentRopeSourceId !== nodeId) {
-          completeRope(nodeId);
-        }
+      if (currentRopeBuildingPath.length === 0) {
+        startBuildingRope(nodeId);
       } else {
-        startRopeFromNode(nodeId);
+        const added = addNodeToBuildingPath(nodeId);
+        if (added) {
+          // 继续添加节点，用户点击画布空白或按回车完成
+        }
       }
     } else if (currentMode === 'select') {
       selectNode(nodeId);
+      selectPathNodeIndex(null);
     }
   }
 
   function handleEdgeClick(event: cytoscape.EventObject) {
     const edgeId = event.target.id();
+    const data = event.target.data();
+
+    if (data.isPreview) return;
 
     if (currentMode === 'delete') {
-      deleteRope(edgeId);
+      if (data.ropeId) {
+        deleteRope(data.ropeId);
+      }
     } else if (currentMode === 'select') {
-      selectRope(edgeId);
+      if (data.ropeId) {
+        selectRope(data.ropeId);
+        selectPathNodeIndex(null);
+      }
     }
   }
 
   function handleNodeDragStart(event: cytoscape.EventObject) {
+    const data = event.target.data();
+    if (data.type === 'offsetPoint') return;
+
     isDragging = true;
     dragNodeId = event.target.id();
   }
@@ -252,13 +401,18 @@
     currentRopePaths;
     currentSelectedNodeId;
     currentSelectedRopeId;
+    currentRopeBuildingPath;
+    currentMode;
+    currentSelectedPathNodeIndex;
     render();
   });
 
   $effect(() => {
-    if (cy && currentRopeSourceId) {
+    if (cy && currentRopeBuildingPath.length > 0) {
       cy.elements().unselect();
-      cy.$(`#${currentRopeSourceId}`).select();
+      for (const nid of currentRopeBuildingPath) {
+        cy.$(`#${nid}`).select();
+      }
     }
   });
 
@@ -329,7 +483,7 @@
           }
         },
         {
-          selector: 'edge[isClosed="false"]',
+          selector: 'edge[isContinuous="false"]',
           style: {
             'line-style': 'dashed'
           }
@@ -345,6 +499,16 @@
           selector: 'edge:selected',
           style: {
             'width': EDGE_WIDTH + 3
+          } as any
+        },
+        {
+          selector: 'node[type="offsetPoint"]',
+          style: {
+            'label': '',
+            'text-valign': 'center',
+            'text-halign': 'center',
+            'overlay-padding': '0px',
+            'overlay-opacity': 0
           } as any
         }
       ]
