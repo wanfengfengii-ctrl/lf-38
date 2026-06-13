@@ -292,10 +292,19 @@
 
         <div>
           <span class="block text-sm font-medium text-gray-700 mb-1">
-            路径连续性
+            相邻节点连续性
           </span>
           <div class="px-3 py-2 rounded {path?.isContinuous ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">
-            {path?.isContinuous ? '✓ 路径连续' : `✗ ${path?.continuityError || '路径断开'}`}
+            {path?.isContinuous ? '✓ 各段连接正常' : `✗ ${path?.continuityError || '路径断开'}`}
+          </div>
+        </div>
+
+        <div>
+          <span class="block text-sm font-medium text-gray-700 mb-1">
+            首尾闭合
+          </span>
+          <div class="px-3 py-2 rounded {path?.isClosed ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}">
+            {path?.isClosed ? '✓ 首尾已闭合' : `○ ${path?.closureError || '首尾未闭合（开放路径）'}`}
           </div>
         </div>
 
@@ -462,8 +471,9 @@
                         </div>
                         <div class="grid grid-cols-2 gap-1">
                           <div>
-                            <label class="text-xs text-gray-500">DX</label>
+                            <label for={`entry-dx-${pathIndex}`} class="text-xs text-gray-500">DX</label>
                             <input
+                              id={`entry-dx-${pathIndex}`}
                               type="number"
                               step="1"
                               value={chainNode.entryOffset.dx}
@@ -472,8 +482,9 @@
                             />
                           </div>
                           <div>
-                            <label class="text-xs text-gray-500">DY</label>
+                            <label for={`entry-dy-${pathIndex}`} class="text-xs text-gray-500">DY</label>
                             <input
+                              id={`entry-dy-${pathIndex}`}
                               type="number"
                               step="1"
                               value={chainNode.entryOffset.dy}
@@ -508,8 +519,9 @@
                         </div>
                         <div class="grid grid-cols-2 gap-1">
                           <div>
-                            <label class="text-xs text-gray-500">DX</label>
+                            <label for={`exit-dx-${pathIndex}`} class="text-xs text-gray-500">DX</label>
                             <input
+                              id={`exit-dx-${pathIndex}`}
                               type="number"
                               step="1"
                               value={chainNode.exitOffset.dx}
@@ -518,8 +530,9 @@
                             />
                           </div>
                           <div>
-                            <label class="text-xs text-gray-500">DY</label>
+                            <label for={`exit-dy-${pathIndex}`} class="text-xs text-gray-500">DY</label>
                             <input
+                              id={`exit-dy-${pathIndex}`}
                               type="number"
                               step="1"
                               value={chainNode.exitOffset.dy}

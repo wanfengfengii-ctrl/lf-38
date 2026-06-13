@@ -80,6 +80,8 @@ export interface RopePath {
   isValid: boolean;
   isContinuous: boolean;
   continuityError?: string;
+  isClosed: boolean;
+  closureError?: string;
   errors: string[];
   pulleyDirectionErrors: { nodeId: string; error: string }[];
   inactivePulleyErrors: { nodeId: string; error: string }[];

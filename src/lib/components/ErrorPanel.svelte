@@ -68,7 +68,7 @@
   <div class="max-h-40 overflow-y-auto">
     {#if currentErrors.length === 0}
       <div class="p-4 text-center text-gray-500 text-sm">
-        所有数据验证通过 · 路径连续 · 滑轮状态正常
+        所有数据验证通过 · 相邻段连接正常 · 滑轮状态正常
       </div>
     {:else}
       <div class="divide-y divide-gray-100">

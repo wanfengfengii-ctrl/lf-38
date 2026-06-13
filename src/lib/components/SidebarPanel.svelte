@@ -158,7 +158,12 @@
               </div>
               {#if path && !path.isContinuous}
                 <div class="text-xs text-red-500 mt-0.5">
-                  ⚠ 路径不连续
+                  ⚠ 相邻节点连接断开
+                </div>
+              {/if}
+              {#if path && !path.isClosed}
+                <div class="text-xs text-yellow-600 mt-0.5">
+                  ○ 首尾未闭合（开放路径）
                 </div>
               {/if}
             </button>
@@ -199,7 +204,7 @@
             </div>
             <div class="flex items-center gap-2">
               <span class="w-6 h-1 bg-amber-600 rounded" style="border-style: dashed;"></span>
-              <span class="text-sm text-gray-700">路径断开</span>
+              <span class="text-sm text-gray-700">相邻段连接断开</span>
             </div>
           </div>
         </div>

@@ -149,6 +149,44 @@ function checkInactivePulleysInPath(
   return errors;
 }
 
+function checkClosure(
+  chainNodes: PathChainNode[],
+  nodes: Map<string, RopeNode>
+): { isClosed: boolean; error?: string } {
+  if (chainNodes.length < 2) {
+    return {
+      isClosed: false,
+      error: '路径节点数不足，无法判断闭合'
+    };
+  }
+
+  const firstChain = chainNodes[0];
+  const lastChain = chainNodes[chainNodes.length - 1];
+  const firstNode = nodes.get(firstChain.nodeId);
+  const lastNode = nodes.get(lastChain.nodeId);
+
+  if (!firstNode || !lastNode) {
+    return { isClosed: false, error: '首尾节点不存在，无法判断闭合' };
+  }
+
+  if (firstNode.id === lastNode.id) {
+    return { isClosed: true };
+  }
+
+  const firstEntryPos = getNodeEffectivePosition(firstNode, firstChain, false);
+  const lastExitPos = getNodeEffectivePosition(lastNode, lastChain, true);
+  const closureDistance = calculateDistance(firstEntryPos, lastExitPos);
+
+  if (closureDistance <= 1.0) {
+    return { isClosed: true };
+  }
+
+  return {
+    isClosed: false,
+    error: `首节点与尾节点未闭合（间距 ${closureDistance.toFixed(2)}，阈值 1.0）`
+  };
+}
+
 function checkContinuity(
   chainNodes: PathChainNode[],
   nodes: Map<string, RopeNode>
@@ -227,6 +265,8 @@ export function validateRopePath(
     errors.push(continuity.error || '路径不连续');
   }
 
+  const closure = checkClosure(rope.nodePath, nodes);
+
   for (let i = 0; i < rope.nodePath.length - 1; i++) {
     const fromChain = rope.nodePath[i];
     const toChain = rope.nodePath[i + 1];
@@ -282,6 +322,8 @@ export function validateRopePath(
     isValid,
     isContinuous: continuity.isContinuous,
     continuityError: continuity.error,
+    isClosed: closure.isClosed,
+    closureError: closure.error,
     errors,
     pulleyDirectionErrors,
     inactivePulleyErrors
