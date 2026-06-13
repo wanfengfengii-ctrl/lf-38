@@ -31,7 +31,12 @@
     nodes,
     ropes,
     selectedPathNodeIndex,
-    selectPathNodeIndex
+    selectPathNodeIndex,
+    currentDiff,
+    viewingVersionId,
+    isPlaybackMode,
+    playbackIndex,
+    playbackSteps
   } = store;
 
   let currentMode = $derived($mode ?? 'select');
@@ -43,16 +48,55 @@
   let currentNodes = $derived($nodes ?? new Map());
   let currentRopes = $derived($ropes ?? new Map());
   let currentSelectedPathNodeIndex = $derived($selectedPathNodeIndex ?? null);
+  let diff = $derived($currentDiff ?? null);
+  let currentViewingId = $derived($viewingVersionId ?? null);
+  let currentIsPlayback = $derived($isPlaybackMode ?? false);
+  let currentPlaybackIndex = $derived($playbackIndex ?? -1);
+  let currentPlaybackSteps = $derived($playbackSteps ?? []);
+
+  function getDiffChangeForNode(nodeId: string): string | null {
+    if (!diff) return null;
+    const nodeDiff = diff.nodeDiffs.find(nd => nd.nodeId === nodeId);
+    return nodeDiff?.changeType || null;
+  }
+
+  function getDiffChangeForRope(ropeId: string): string | null {
+    if (!diff) return null;
+    const ropeDiff = diff.ropeDiffs.find(rd => rd.ropeId === ropeId);
+    return ropeDiff?.changeType || null;
+  }
 
   function getNodeStyle(node: RopeNode, isSelected: boolean, hasError: boolean) {
     const baseColor = NODE_TYPE_COLORS[node.type];
     const opacity = node.type === 'pulley' && !(node as any).active ? 0.4 : 1;
+    const diffChange = getDiffChangeForNode(node.id);
+
+    let borderColor = isSelected ? '#FFD700' : '#333';
+    let borderWidth = isSelected ? 4 : 2;
+    let backgroundColor = hasError ? '#DC143C' : baseColor;
+
+    if (diffChange) {
+      switch (diffChange) {
+        case 'added':
+          borderColor = '#22C55E';
+          borderWidth = 5;
+          break;
+        case 'removed':
+          borderColor = '#EF4444';
+          borderWidth = 5;
+          break;
+        case 'modified':
+          borderColor = '#F59E0B';
+          borderWidth = 5;
+          break;
+      }
+    }
 
     return {
-      'background-color': hasError ? '#DC143C' : baseColor,
+      'background-color': backgroundColor,
       'background-opacity': opacity,
-      'border-color': isSelected ? '#FFD700' : '#333',
-      'border-width': isSelected ? 4 : 2,
+      'border-color': borderColor,
+      'border-width': borderWidth,
       'width': NODE_RADIUS * 2,
       'height': NODE_RADIUS * 2
     };
@@ -65,14 +109,35 @@
     isSelected: boolean
   ) {
     const hasError = !path?.isValid || !segment.valid;
-    const color = hasError ? '#DC143C' : (rope.color || '#CD853F');
+    let color = hasError ? '#DC143C' : (rope.color || '#CD853F');
     const isContinuous = path?.isContinuous ?? true;
+    const diffChange = getDiffChangeForRope(rope.id);
+
+    let width = isSelected ? EDGE_WIDTH + 2 : EDGE_WIDTH;
+    let lineStyle: string = !isContinuous ? 'dashed' : 'solid';
+    let opacity = hasError ? 0.6 : 1;
+
+    if (diffChange) {
+      width = EDGE_WIDTH + 4;
+      switch (diffChange) {
+        case 'added':
+          color = '#22C55E';
+          break;
+        case 'removed':
+          color = '#EF4444';
+          lineStyle = 'dashed';
+          break;
+        case 'modified':
+          color = '#F59E0B';
+          break;
+      }
+    }
 
     return {
       'line-color': color,
-      'width': isSelected ? EDGE_WIDTH + 2 : EDGE_WIDTH,
-      'opacity': hasError ? 0.6 : 1,
-      'line-style': !isContinuous ? 'dashed' : 'solid'
+      'width': width,
+      'opacity': opacity,
+      'line-style': lineStyle
     };
   }
 
@@ -529,8 +594,44 @@
   });
 </script>
 
-<div
-  bind:this={container}
-  class="cy-container"
-  role="presentation"
-></div>
+<div class="relative h-full w-full">
+  <div
+    bind:this={container}
+    class="cy-container"
+    role="presentation"
+  ></div>
+
+  {#if diff}
+    <div class="absolute top-2 left-1/2 -translate-x-1/2 z-10 bg-white/95 backdrop-blur px-3 py-1.5 rounded-lg shadow-lg border border-amber-300 flex items-center gap-2 text-xs">
+      <span class="font-bold text-amber-700">🔍 差异对比模式</span>
+      <div class="flex items-center gap-1">
+        <span class="w-3 h-3 rounded-full border-2 border-green-500 bg-white"></span>
+        <span class="text-gray-600">新增</span>
+      </div>
+      <div class="flex items-center gap-1">
+        <span class="w-3 h-3 rounded-full border-2 border-red-500 bg-white"></span>
+        <span class="text-gray-600">删除</span>
+      </div>
+      <div class="flex items-center gap-1">
+        <span class="w-3 h-3 rounded-full border-2 border-amber-500 bg-white"></span>
+        <span class="text-gray-600">修改</span>
+      </div>
+    </div>
+  {/if}
+
+  {#if currentIsPlayback}
+    <div class="absolute top-2 left-1/2 -translate-x-1/2 z-10 bg-purple-500/95 backdrop-blur px-3 py-1.5 rounded-lg shadow-lg flex items-center gap-2 text-xs text-white">
+      <span class="font-bold">🎬 回放模式</span>
+      <span>步骤 {currentPlaybackIndex + 1}/{currentPlaybackSteps.length}</span>
+      {#if currentPlaybackIndex >= 0 && currentPlaybackSteps[currentPlaybackIndex]}
+        <span class="opacity-80">
+          · v{currentPlaybackSteps[currentPlaybackIndex].snapshot.versionNumber}
+        </span>
+      {/if}
+    </div>
+  {:else if currentViewingId}
+    <div class="absolute top-2 right-2 z-10 bg-blue-500/95 backdrop-blur px-3 py-1.5 rounded-lg shadow-lg text-xs text-white">
+      <span class="font-bold">👁 查看历史版本</span>
+    </div>
+  {/if}
+</div>

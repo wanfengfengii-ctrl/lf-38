@@ -183,3 +183,72 @@ export function calculatePulleyWrapAngle(
   while (diff < -Math.PI) diff += 2 * Math.PI;
   return Math.abs(diff);
 }
+
+export interface VersionSnapshot {
+  id: string;
+  versionNumber: number;
+  createdAt: string;
+  note: string;
+  nodes: RopeNode[];
+  ropes: RopeData[];
+  stats: {
+    nodeCount: number;
+    ropeCount: number;
+    totalLength: number;
+    totalTension: number;
+    mastCount: number;
+    pulleyCount: number;
+    mooringCount: number;
+    activePulleyCount: number;
+  };
+}
+
+export type ChangeType = 'added' | 'removed' | 'modified' | 'unchanged';
+
+export interface NodeDiff {
+  nodeId: string;
+  changeType: ChangeType;
+  label?: string;
+  oldNode?: RopeNode;
+  newNode?: RopeNode;
+  changedFields?: string[];
+}
+
+export interface RopeDiff {
+  ropeId: string;
+  changeType: ChangeType;
+  label?: string;
+  oldRope?: RopeData;
+  newRope?: RopeData;
+  changedFields?: string[];
+  pathChanges?: {
+    type: 'added' | 'removed' | 'reordered';
+    nodeId: string;
+    index?: number;
+  }[];
+}
+
+export interface VersionDiff {
+  versionAId: string;
+  versionBId: string;
+  nodeDiffs: NodeDiff[];
+  ropeDiffs: RopeDiff[];
+  summary: {
+    addedNodes: number;
+    removedNodes: number;
+    modifiedNodes: number;
+    addedRopes: number;
+    removedRopes: number;
+    modifiedRopes: number;
+    totalLengthDelta: number;
+    totalTensionDelta: number;
+  };
+}
+
+export interface PlaybackStep {
+  stepNumber: number;
+  description: string;
+  snapshot: VersionSnapshot;
+  ropeId?: string;
+  changes?: string[];
+}

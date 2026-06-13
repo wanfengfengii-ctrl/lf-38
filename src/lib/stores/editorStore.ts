@@ -12,7 +12,10 @@ import type {
   PulleyNode,
   MooringNode,
   PathChainNode,
-  PathChainOffset
+  PathChainOffset,
+  VersionSnapshot,
+  VersionDiff,
+  PlaybackStep
 } from '$lib/types';
 import {
   generateId,
@@ -30,6 +33,17 @@ import {
   validateRopePath,
   recalculateRopeLengths
 } from '$lib/utils/pathValidator';
+import {
+  createVersionSnapshot,
+  saveVersions,
+  loadVersions,
+  clearVersions as clearVersionsStorage,
+  compareVersions as doCompareVersions,
+  generatePlaybackSteps as doGeneratePlaybackSteps,
+  restoreVersion as doRestoreVersion,
+  exportVersions as doExportVersions,
+  importVersions as doImportVersions
+} from '$lib/utils/versionManager';
 
 function createEditorStore() {
   const nodes = writable<Map<string, RopeNode>>(new Map());
@@ -43,6 +57,15 @@ function createEditorStore() {
   const ropeBuildingPath = writable<string[]>([]);
   const isDirty = writable<boolean>(false);
   const lastSavedAt = writable<string | null>(null);
+  const versions = writable<VersionSnapshot[]>([]);
+  const viewingVersionId = writable<string | null>(null);
+  const compareVersionAId = writable<string | null>(null);
+  const compareVersionBId = writable<string | null>(null);
+  const currentDiff = writable<VersionDiff | null>(null);
+  const playbackSteps = writable<PlaybackStep[]>([]);
+  const playbackIndex = writable<number>(-1);
+  const isPlaybackMode = writable<boolean>(false);
+  const playbackRopeId = writable<string | null>(null);
 
   const validationErrors = derived<
     [typeof nodes, typeof ropes],
@@ -550,6 +573,196 @@ function createEditorStore() {
 
   const STORAGE_KEY = 'rope-editor-scheme';
 
+  function loadVersionsFromStorage(): void {
+    const loaded = loadVersions();
+    versions.set(loaded);
+  }
+
+  function getNextVersionNumber(): number {
+    const $versions = get(versions);
+    if ($versions.length === 0) return 0;
+    return Math.max(...$versions.map(v => v.versionNumber));
+  }
+
+  function createVersion(note: string = ''): VersionSnapshot | null {
+    const $nodes = get(nodes);
+    const $ropes = get(ropes);
+    if (!canSave($nodes, $ropes)) {
+      return null;
+    }
+    const snapshot = createVersionSnapshot($nodes, $ropes, note, getNextVersionNumber());
+    versions.update(($versions) => {
+      const updated = [...$versions, snapshot];
+      saveVersions(updated);
+      return updated;
+    });
+    return snapshot;
+  }
+
+  function deleteVersion(versionId: string): boolean {
+    versions.update(($versions) => {
+      const updated = $versions.filter(v => v.id !== versionId);
+      saveVersions(updated);
+      return updated;
+    });
+    if (get(compareVersionAId) === versionId) compareVersionAId.set(null);
+    if (get(compareVersionBId) === versionId) compareVersionBId.set(null);
+    if (get(viewingVersionId) === versionId) exitViewVersion();
+    return true;
+  }
+
+  function clearAllVersions(): void {
+    clearVersionsStorage();
+    versions.set([]);
+    compareVersionAId.set(null);
+    compareVersionBId.set(null);
+    currentDiff.set(null);
+    viewingVersionId.set(null);
+    stopPlayback();
+  }
+
+  function viewVersion(versionId: string): boolean {
+    const $versions = get(versions);
+    const snapshot = $versions.find(v => v.id === versionId);
+    if (!snapshot) return false;
+
+    const restored = doRestoreVersion(snapshot);
+    nodes.set(restored.nodes);
+    ropes.set(restored.ropes);
+    nextNodeNumber.set(getNextNodeNumber());
+    viewingVersionId.set(versionId);
+    clearSelection();
+    return true;
+  }
+
+  function exitViewVersion(): void {
+    viewingVersionId.set(null);
+    loadFromLocalStorage();
+  }
+
+  function setCompareVersionA(versionId: string | null): void {
+    compareVersionAId.set(versionId);
+    updateDiffIfReady();
+  }
+
+  function setCompareVersionB(versionId: string | null): void {
+    compareVersionBId.set(versionId);
+    updateDiffIfReady();
+  }
+
+  function updateDiffIfReady(): void {
+    const aId = get(compareVersionAId);
+    const bId = get(compareVersionBId);
+    if (!aId || !bId) {
+      currentDiff.set(null);
+      return;
+    }
+    const $versions = get(versions);
+    const a = $versions.find(v => v.id === aId);
+    const b = $versions.find(v => v.id === bId);
+    if (!a || !b) {
+      currentDiff.set(null);
+      return;
+    }
+    currentDiff.set(doCompareVersions(a, b));
+  }
+
+  function clearCompare(): void {
+    compareVersionAId.set(null);
+    compareVersionBId.set(null);
+    currentDiff.set(null);
+  }
+
+  function startPlayback(targetRopeId?: string): boolean {
+    const $versions = get(versions);
+    if ($versions.length < 2) return false;
+
+    const steps = doGeneratePlaybackSteps($versions, targetRopeId);
+    if (steps.length < 2) return false;
+
+    playbackSteps.set(steps);
+    playbackRopeId.set(targetRopeId || null);
+    playbackIndex.set(0);
+    isPlaybackMode.set(true);
+    applyPlaybackStep(0);
+    return true;
+  }
+
+  function applyPlaybackStep(index: number): void {
+    const $steps = get(playbackSteps);
+    if (index < 0 || index >= $steps.length) return;
+    const step = $steps[index];
+    const restored = doRestoreVersion(step.snapshot);
+    nodes.set(restored.nodes);
+    ropes.set(restored.ropes);
+    nextNodeNumber.set(getNextNodeNumber());
+    playbackIndex.set(index);
+    clearSelection();
+    if (step.ropeId) {
+      selectedRopeId.set(step.ropeId);
+    }
+  }
+
+  function nextPlaybackStep(): boolean {
+    const $steps = get(playbackSteps);
+    const current = get(playbackIndex);
+    if (current < $steps.length - 1) {
+      applyPlaybackStep(current + 1);
+      return true;
+    }
+    return false;
+  }
+
+  function prevPlaybackStep(): boolean {
+    const current = get(playbackIndex);
+    if (current > 0) {
+      applyPlaybackStep(current - 1);
+      return true;
+    }
+    return false;
+  }
+
+  function goToPlaybackStep(index: number): boolean {
+    const $steps = get(playbackSteps);
+    if (index >= 0 && index < $steps.length) {
+      applyPlaybackStep(index);
+      return true;
+    }
+    return false;
+  }
+
+  function stopPlayback(): void {
+    isPlaybackMode.set(false);
+    playbackSteps.set([]);
+    playbackIndex.set(-1);
+    playbackRopeId.set(null);
+    if (get(viewingVersionId)) {
+      exitViewVersion();
+    }
+  }
+
+  function exportAllVersions(): string {
+    return doExportVersions(get(versions));
+  }
+
+  function importAllVersions(json: string): boolean {
+    const imported = doImportVersions(json);
+    if (!imported) return false;
+    const existing = get(versions);
+    const existingIds = new Set(existing.map(v => v.id));
+    const merged = [...existing];
+    let nextNum = getNextVersionNumber();
+    for (const v of imported) {
+      if (!existingIds.has(v.id)) {
+        nextNum++;
+        merged.push({ ...v, id: generateId(), versionNumber: nextNum });
+      }
+    }
+    versions.set(merged);
+    saveVersions(merged);
+    return true;
+  }
+
   function saveToLocalStorage(): boolean {
     if (!canSave(get(nodes), get(ropes))) {
       return false;
@@ -563,6 +776,9 @@ function createEditorStore() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
       isDirty.set(false);
       lastSavedAt.set(data.savedAt);
+
+      createVersion('自动保存 - ' + new Date().toLocaleString('zh-CN'));
+
       return true;
     } catch {
       return false;
@@ -571,6 +787,7 @@ function createEditorStore() {
 
   function loadFromLocalStorage(): boolean {
     try {
+      loadVersionsFromStorage();
       const json = localStorage.getItem(STORAGE_KEY);
       if (!json) return false;
       const data = JSON.parse(json);
@@ -735,9 +952,22 @@ function createEditorStore() {
 
     nextNodeNumber.set(8);
     isDirty.set(false);
+
+    if (get(versions).length === 0) {
+      createVersion('初始示例方案 - 主帆穿绕索');
+    }
   }
 
   return {
+    versions,
+    viewingVersionId,
+    compareVersionAId,
+    compareVersionBId,
+    currentDiff,
+    playbackSteps,
+    playbackIndex,
+    isPlaybackMode,
+    playbackRopeId,
     nodes,
     ropes,
     selectedNodeId,
@@ -786,7 +1016,23 @@ function createEditorStore() {
     saveToLocalStorage,
     loadFromLocalStorage,
     hasSavedScheme,
-    clearSavedScheme
+    clearSavedScheme,
+    createVersion,
+    deleteVersion,
+    clearAllVersions,
+    viewVersion,
+    exitViewVersion,
+    setCompareVersionA,
+    setCompareVersionB,
+    clearCompare,
+    startPlayback,
+    nextPlaybackStep,
+    prevPlaybackStep,
+    goToPlaybackStep,
+    stopPlayback,
+    exportAllVersions,
+    importAllVersions,
+    loadVersionsFromStorage
   };
 }
 
