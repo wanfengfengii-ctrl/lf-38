@@ -693,12 +693,13 @@ function createEditorStore() {
     if (index < 0 || index >= $steps.length) return;
     const step = $steps[index];
     const restored = doRestoreVersion(step.snapshot);
+
     nodes.set(restored.nodes);
     ropes.set(restored.ropes);
     nextNodeNumber.set(getNextNodeNumber());
     playbackIndex.set(index);
     clearSelection();
-    if (step.ropeId) {
+    if (step.ropeId && restored.ropes.has(step.ropeId)) {
       selectedRopeId.set(step.ropeId);
     }
   }

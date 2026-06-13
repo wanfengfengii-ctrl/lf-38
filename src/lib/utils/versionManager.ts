@@ -311,6 +311,126 @@ export function generatePlaybackSteps(
   if (versions.length === 0) return [];
 
   const sorted = [...versions].sort((a, b) => a.versionNumber - b.versionNumber);
+
+  if (targetRopeId) {
+    const ropeExistsInVersion = (v: VersionSnapshot): boolean => {
+      return v.ropes.some(r => r.id === targetRopeId);
+    };
+
+    const filtered = sorted.filter(ropeExistsInVersion);
+    if (filtered.length === 0) return [];
+
+    const steps: PlaybackStep[] = [];
+
+    for (let i = 0; i < filtered.length; i++) {
+      const snapshot = filtered[i];
+      const changes: string[] = [];
+      const currentRope = snapshot.ropes.find(r => r.id === targetRopeId)!;
+      const currentNodeIds = new Set(currentRope.nodePath.map(cn => cn.nodeId));
+
+      if (i > 0) {
+        const prev = filtered[i - 1];
+        const prevRope = prev.ropes.find(r => r.id === targetRopeId);
+
+        if (prevRope) {
+          const prevNodeIds = new Set(prevRope.nodePath.map(cn => cn.nodeId));
+
+          const addedNodes: string[] = [];
+          const removedNodes: string[] = [];
+          for (const nid of currentNodeIds) {
+            if (!prevNodeIds.has(nid)) addedNodes.push(nid);
+          }
+          for (const nid of prevNodeIds) {
+            if (!currentNodeIds.has(nid)) removedNodes.push(nid);
+          }
+
+          if (addedNodes.length > 0) {
+            const nodeLabels = addedNodes.map(nid => {
+              const node = snapshot.nodes.find(n => n.id === nid);
+              return node?.label || nid;
+            }).join('、');
+            changes.push(`新增节点：${nodeLabels}`);
+          }
+          if (removedNodes.length > 0) {
+            const nodeLabels = removedNodes.map(nid => {
+              const node = prev.nodes.find(n => n.id === nid);
+              return node?.label || nid;
+            }).join('、');
+            changes.push(`删除节点：${nodeLabels}`);
+          }
+
+          const reordered = prevRope.nodePath.some((cn, idx) => cn.nodeId !== currentRope.nodePath[idx]?.nodeId);
+          if (reordered && addedNodes.length === 0 && removedNodes.length === 0) {
+            changes.push('穿绕顺序调整');
+          }
+
+          if (Math.abs(currentRope.tension - prevRope.tension) > 0.01) {
+            const delta = currentRope.tension - prevRope.tension;
+            changes.push(`张力${delta > 0 ? '+' : ''}${delta.toFixed(0)}N`);
+          }
+
+          if (Math.abs(currentRope.totalLength - prevRope.totalLength) > 0.01) {
+            const delta = currentRope.totalLength - prevRope.totalLength;
+            changes.push(`长度${delta > 0 ? '+' : ''}${delta.toFixed(1)}m`);
+          }
+
+          if (currentRope.color !== prevRope.color) {
+            changes.push('颜色变更');
+          }
+
+          if (currentRope.label !== prevRope.label) {
+            changes.push(`标签变更：${prevRope.label} → ${currentRope.label}`);
+          }
+
+          for (let j = 0; j < currentRope.nodePath.length; j++) {
+            const currCN = currentRope.nodePath[j];
+            const prevCN = prevRope.nodePath.find(cn => cn.nodeId === currCN.nodeId);
+            if (prevCN) {
+              const entryDx = currCN.entryOffset.dx - prevCN.entryOffset.dx;
+              const entryDy = currCN.entryOffset.dy - prevCN.entryOffset.dy;
+              const exitDx = currCN.exitOffset.dx - prevCN.exitOffset.dx;
+              const exitDy = currCN.exitOffset.dy - prevCN.exitOffset.dy;
+
+              if (Math.abs(entryDx) > 0.01 || Math.abs(entryDy) > 0.01 ||
+                  Math.abs(exitDx) > 0.01 || Math.abs(exitDy) > 0.01) {
+                const node = snapshot.nodes.find(n => n.id === currCN.nodeId);
+                changes.push(`${node?.label || '节点'} 入点/出点偏移调整`);
+                break;
+              }
+            }
+          }
+        } else {
+          changes.push(`缆绳「${currentRope.label}」首次出现`);
+        }
+      } else {
+        changes.push(`缆绳「${currentRope.label}」初始方案：${currentRope.nodePath.length} 个节点，长度 ${currentRope.totalLength.toFixed(1)}m，张力 ${currentRope.tension.toFixed(0)}N`);
+      }
+
+      const modifiedSnapshot: VersionSnapshot = {
+        ...snapshot,
+        nodes: snapshot.nodes.filter(n => currentNodeIds.has(n.id)),
+        ropes: [currentRope],
+        stats: {
+          ...snapshot.stats,
+          nodeCount: currentNodeIds.size,
+          ropeCount: 1,
+          totalLength: currentRope.totalLength,
+          totalTension: currentRope.tension
+        }
+      };
+
+      steps.push({
+        stepNumber: i + 1,
+        description: snapshot.note || (changes.length > 0 ? changes.join('；') : `版本 ${snapshot.versionNumber}`),
+        snapshot: modifiedSnapshot,
+        ropeId: targetRopeId,
+        changes: changes.length > 0 ? changes : undefined
+      });
+    }
+
+    return steps;
+  }
+
   const steps: PlaybackStep[] = [];
 
   for (let i = 0; i < sorted.length; i++) {

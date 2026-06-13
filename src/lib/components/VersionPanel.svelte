@@ -510,36 +510,63 @@
         {/if}
 
         {#if diff}
-          <div class="p-2 bg-gray-50 rounded border border-gray-200">
-            <div class="text-xs font-bold text-gray-700 mb-2">📊 差异汇总</div>
-            <div class="grid grid-cols-2 gap-1 text-xs">
-              <div class="flex items-center gap-1">
-                <span class="w-2 h-2 rounded-full bg-green-500"></span>
-                新增节点: {diff.summary.addedNodes}
-              </div>
-              <div class="flex items-center gap-1">
-                <span class="w-2 h-2 rounded-full bg-red-500"></span>
-                删除节点: {diff.summary.removedNodes}
-              </div>
-              <div class="flex items-center gap-1">
-                <span class="w-2 h-2 rounded-full bg-amber-500"></span>
-                修改节点: {diff.summary.modifiedNodes}
-              </div>
-              <div class="flex items-center gap-1">
-                <span class="w-2 h-2 rounded-full bg-purple-500"></span>
-                修改缆绳: {diff.summary.modifiedRopes}
-              </div>
-              <div class="col-span-2 mt-1 pt-1 border-t border-gray-200">
-                <div>📏 总长度变化:
-                  <span class={diff.summary.totalLengthDelta >= 0 ? 'text-green-600' : 'text-red-600'}>
-                    {diff.summary.totalLengthDelta >= 0 ? '+' : ''}{diff.summary.totalLengthDelta.toFixed(2)}m
-                  </span>
+          <div class="p-3 bg-gray-50 rounded border border-gray-200">
+            <div class="text-xs font-bold text-gray-700 mb-3">📊 差异汇总</div>
+
+            <div class="mb-3">
+              <div class="text-xs font-medium text-gray-600 mb-1.5">📍 节点变更</div>
+              <div class="grid grid-cols-3 gap-2 text-xs">
+                <div class="flex items-center gap-1.5 bg-green-50 px-2 py-1 rounded">
+                  <span class="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0"></span>
+                  <span class="text-green-700 font-medium">新增</span>
+                  <span class="ml-auto font-bold text-green-800">{diff.summary.addedNodes}</span>
                 </div>
-                <div>⚡ 总张力变化:
-                  <span class={diff.summary.totalTensionDelta >= 0 ? 'text-green-600' : 'text-red-600'}>
-                    {diff.summary.totalTensionDelta >= 0 ? '+' : ''}{diff.summary.totalTensionDelta.toFixed(0)}N
-                  </span>
+                <div class="flex items-center gap-1.5 bg-red-50 px-2 py-1 rounded">
+                  <span class="w-2.5 h-2.5 rounded-full bg-red-500 flex-shrink-0"></span>
+                  <span class="text-red-700 font-medium">删除</span>
+                  <span class="ml-auto font-bold text-red-800">{diff.summary.removedNodes}</span>
                 </div>
+                <div class="flex items-center gap-1.5 bg-amber-50 px-2 py-1 rounded">
+                  <span class="w-2.5 h-2.5 rounded-full bg-amber-500 flex-shrink-0"></span>
+                  <span class="text-amber-700 font-medium">修改</span>
+                  <span class="ml-auto font-bold text-amber-800">{diff.summary.modifiedNodes}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <div class="text-xs font-medium text-gray-600 mb-1.5">〰 缆绳变更</div>
+              <div class="grid grid-cols-3 gap-2 text-xs">
+                <div class="flex items-center gap-1.5 bg-emerald-50 px-2 py-1 rounded">
+                  <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 flex-shrink-0"></span>
+                  <span class="text-emerald-700 font-medium">新增</span>
+                  <span class="ml-auto font-bold text-emerald-800">{diff.summary.addedRopes}</span>
+                </div>
+                <div class="flex items-center gap-1.5 bg-rose-50 px-2 py-1 rounded">
+                  <span class="w-2.5 h-2.5 rounded-full bg-rose-500 flex-shrink-0"></span>
+                  <span class="text-rose-700 font-medium">删除</span>
+                  <span class="ml-auto font-bold text-rose-800">{diff.summary.removedRopes}</span>
+                </div>
+                <div class="flex items-center gap-1.5 bg-orange-50 px-2 py-1 rounded">
+                  <span class="w-2.5 h-2.5 rounded-full bg-orange-500 flex-shrink-0"></span>
+                  <span class="text-orange-700 font-medium">修改</span>
+                  <span class="ml-auto font-bold text-orange-800">{diff.summary.modifiedRopes}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="pt-3 border-t border-gray-200 space-y-2">
+              <div class="flex items-center justify-between text-xs">
+                <span class="text-gray-600">📏 总长度变化</span>
+                <span class={`font-bold ${diff.summary.totalLengthDelta >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  {diff.summary.totalLengthDelta >= 0 ? '+' : ''}{diff.summary.totalLengthDelta.toFixed(2)}m
+                </span>
+              </div>
+              <div class="flex items-center justify-between text-xs">
+                <span class="text-gray-600">⚡ 总张力变化</span>
+                <span class={`font-bold ${diff.summary.totalTensionDelta >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  {diff.summary.totalTensionDelta >= 0 ? '+' : ''}{diff.summary.totalTensionDelta.toFixed(0)}N
+                </span>
               </div>
             </div>
           </div>
@@ -605,11 +632,27 @@
                         {/each}
                       </div>
                     {/if}
-                  {/if}
-                  {#if rd.newRope}
-                    <div class="text-xs text-gray-500 mt-1">
-                      📏 {rd.newRope.totalLength.toFixed(1)}m · ⚡ {rd.newRope.tension}N · {rd.newRope.nodePath.length - 1}段
+                  {:else if rd.changeType === 'added'}
+                    <div class="text-xs text-green-600 mt-1">
+                      新增缆绳，包含以下参数：
                     </div>
+                  {:else if rd.changeType === 'removed'}
+                    <div class="text-xs text-red-600 mt-1">
+                      缆绳被删除，原参数：
+                    </div>
+                  {/if}
+                  {#if rd.newRope || rd.oldRope}
+                    {@const ropeToShow = rd.newRope || rd.oldRope}
+                    {#if ropeToShow}
+                      <div class="text-xs text-gray-500 mt-1">
+                        📏 {ropeToShow.totalLength.toFixed(1)}m · ⚡ {ropeToShow.tension}N · {ropeToShow.nodePath.length - 1}段
+                      </div>
+                      {#if ropeToShow.description}
+                        <div class="text-xs text-gray-500 mt-0.5">
+                          📝 {ropeToShow.description}
+                        </div>
+                      {/if}
+                    {/if}
                   {/if}
                 </div>
               {/each}
