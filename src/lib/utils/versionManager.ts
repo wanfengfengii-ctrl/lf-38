@@ -6,10 +6,44 @@ import type {
   NodeDiff,
   RopeDiff,
   ChangeType,
-  PlaybackStep
+  PlaybackStep,
+  ReviewComment,
+  ReviewCommentReply,
+  ReviewStatus
 } from '$lib/types';
 import { generateId } from '$lib/types';
 import { calculateTotalRopeLength } from '$lib/utils/pathValidator';
+
+const REVIEWS_STORAGE_KEY = 'rope-editor-reviews';
+
+export function loadReviews(): ReviewComment[] {
+  try {
+    const json = localStorage.getItem(REVIEWS_STORAGE_KEY);
+    if (!json) return [];
+    const data = JSON.parse(json);
+    if (!Array.isArray(data)) return [];
+    return data as ReviewComment[];
+  } catch {
+    return [];
+  }
+}
+
+export function saveReviews(reviews: ReviewComment[]): boolean {
+  try {
+    localStorage.setItem(REVIEWS_STORAGE_KEY, JSON.stringify(reviews));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearReviews(): void {
+  try {
+    localStorage.removeItem(REVIEWS_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
 
 const VERSIONS_STORAGE_KEY = 'rope-editor-versions';
 const MAX_VERSIONS = 50;

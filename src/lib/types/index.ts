@@ -107,7 +107,7 @@ export interface ValidationError {
   severity: 'error' | 'warning';
 }
 
-export type EditorMode = 'select' | 'addNode' | 'addRope' | 'delete' | 'edit' | 'extendPath';
+export type EditorMode = 'select' | 'addNode' | 'addRope' | 'delete' | 'edit' | 'extendPath' | 'review';
 
 export const NODE_TYPE_LABELS: Record<NodeType, string> = {
   mast: '桅杆',
@@ -252,3 +252,266 @@ export interface PlaybackStep {
   ropeId?: string;
   changes?: string[];
 }
+
+export type ReviewStatus = 'pending' | 'resolved' | 'rejected' | 'in_progress' | 'verified' | 'closed';
+
+export type ReviewTargetType = 'node' | 'rope' | 'general';
+
+export type ReviewPriority = 'low' | 'medium' | 'high' | 'critical';
+
+export interface ReviewUser {
+  id: string;
+  name: string;
+  role: 'librarian' | 'modelist' | 'reviewer' | 'admin';
+  avatar?: string;
+  color?: string;
+}
+
+export interface ReviewSelection {
+  targetType: ReviewTargetType;
+  nodeIds?: string[];
+  ropeIds?: string[];
+  boundingBox?: {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+  };
+}
+
+export interface ReviewCommentReply {
+  id: string;
+  userId: string;
+  userName: string;
+  userRole: ReviewUser['role'];
+  userColor?: string;
+  content: string;
+  createdAt: string;
+  changedStatusTo?: ReviewStatus;
+}
+
+export interface ReviewClosureRecord {
+  closedAt: string;
+  closedBy: string;
+  closedByName: string;
+  note?: string;
+}
+
+export interface ReviewComment {
+  id: string;
+  commentNumber: number;
+  versionId: string;
+  userId: string;
+  userName: string;
+  userRole: ReviewUser['role'];
+  userColor: string;
+  content: string;
+  createdAt: string;
+  status: ReviewStatus;
+  priority: ReviewPriority;
+  selection: ReviewSelection;
+  category?: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  resolvedByName?: string;
+  resolveNote?: string;
+  verifiedAt?: string;
+  verifiedBy?: string;
+  verifiedByName?: string;
+  closure?: ReviewClosureRecord;
+  replies: ReviewCommentReply[];
+  resolvedVersionId?: string;
+  tags?: string[];
+  relatedCommentIds?: string[];
+}
+
+export type ReviewActivityType =
+  | 'comment_created'
+  | 'status_changed'
+  | 'reply_added'
+  | 'priority_changed'
+  | 'category_changed'
+  | 'version_resolved'
+  | 'comment_verified'
+  | 'comment_closed'
+  | 'comment_reopened'
+  | 'selection_updated';
+
+export interface ReviewActivity {
+  id: string;
+  type: ReviewActivityType;
+  commentId: string;
+  commentNumber: number;
+  userId: string;
+  userName: string;
+  userColor: string;
+  userRole: ReviewUser['role'];
+  content: string;
+  createdAt: string;
+  metadata?: {
+    oldStatus?: ReviewStatus;
+    newStatus?: ReviewStatus;
+    oldPriority?: ReviewPriority;
+    newPriority?: ReviewPriority;
+    versionId?: string;
+    versionNumber?: number;
+    targetType?: ReviewTargetType;
+    nodeIds?: string[];
+    ropeIds?: string[];
+  };
+}
+
+export interface ReviewMention {
+  userId: string;
+  userName: string;
+  startIndex: number;
+  endIndex: number;
+}
+
+export interface ReviewTraceabilityLink {
+  commentId: string;
+  commentNumber: number;
+  commentContent: string;
+  commentStatus: ReviewStatus;
+  commentPriority: ReviewPriority;
+  commentUserId: string;
+  commentUserName: string;
+  commentUserColor: string;
+  sourceVersionId: string;
+  sourceVersionNumber: number;
+  resolvedVersionId?: string;
+  resolvedVersionNumber?: number;
+  resolutionNote?: string;
+  isResolved: boolean;
+}
+
+export interface ReviewClosureMetrics {
+  totalComments: number;
+  pendingCount: number;
+  inProgressCount: number;
+  resolvedCount: number;
+  verifiedCount: number;
+  closedCount: number;
+  rejectedCount: number;
+  closureRate: number;
+  avgResolutionTimeMs: number;
+  criticalOpen: number;
+  highOpen: number;
+  byCategory: Record<string, { total: number; resolved: number }>;
+  byUser: Record<string, { name: string; color: string; total: number; resolved: number }>;
+  recentActivityCount: number;
+}
+
+export interface ReviewExportData {
+  version: number;
+  exportedAt: string;
+  reviewComments: ReviewComment[];
+  reviewUsers: ReviewUser[];
+  reviewActivities?: ReviewActivity[];
+}
+
+export const REVIEW_STATUS_LABELS: Record<ReviewStatus, string> = {
+  pending: '待处理',
+  in_progress: '处理中',
+  resolved: '已解决',
+  rejected: '已拒绝',
+  verified: '已验证',
+  closed: '已关闭'
+};
+
+export const REVIEW_STATUS_COLORS: Record<ReviewStatus, string> = {
+  pending: 'bg-amber-100 text-amber-700 border-amber-300',
+  in_progress: 'bg-blue-100 text-blue-700 border-blue-300',
+  resolved: 'bg-green-100 text-green-700 border-green-300',
+  rejected: 'bg-gray-100 text-gray-600 border-gray-300',
+  verified: 'bg-teal-100 text-teal-700 border-teal-300',
+  closed: 'bg-slate-200 text-slate-700 border-slate-400'
+};
+
+export const REVIEW_STATUS_FLOW_ORDER: ReviewStatus[] = ['pending', 'in_progress', 'resolved', 'verified', 'closed'];
+
+export const REVIEW_PRIORITY_LABELS: Record<ReviewPriority, string> = {
+  low: '低',
+  medium: '中',
+  high: '高',
+  critical: '紧急'
+};
+
+export const REVIEW_PRIORITY_COLORS: Record<ReviewPriority, string> = {
+  low: 'bg-gray-100 text-gray-600 border-gray-300',
+  medium: 'bg-blue-100 text-blue-700 border-blue-300',
+  high: 'bg-orange-100 text-orange-700 border-orange-300',
+  critical: 'bg-red-100 text-red-700 border-red-300'
+};
+
+export const REVIEW_PRIORITY_BADGE: Record<ReviewPriority, string> = {
+  low: '#9CA3AF',
+  medium: '#3B82F6',
+  high: '#F97316',
+  critical: '#EF4444'
+};
+
+export const REVIEW_CATEGORIES = [
+  '结构安全',
+  '路径优化',
+  '力学合理性',
+  '材料选择',
+  '工艺性',
+  '文档完善',
+  '其他'
+];
+
+export const REVIEW_ACTIVITY_LABELS: Record<ReviewActivityType, string> = {
+  comment_created: '提出意见',
+  status_changed: '变更状态',
+  reply_added: '添加回复',
+  priority_changed: '调整优先级',
+  category_changed: '修改分类',
+  version_resolved: '版本解决',
+  comment_verified: '验证确认',
+  comment_closed: '归档关闭',
+  comment_reopened: '重新打开',
+  selection_updated: '更新圈选'
+};
+
+export const REVIEW_ACTIVITY_ICONS: Record<ReviewActivityType, string> = {
+  comment_created: '📝',
+  status_changed: '🔄',
+  reply_added: '💬',
+  priority_changed: '⚠️',
+  category_changed: '🏷️',
+  version_resolved: '📌',
+  comment_verified: '✅',
+  comment_closed: '📁',
+  comment_reopened: '🔓',
+  selection_updated: '🎯'
+};
+
+export const REVIEW_USER_ROLE_LABELS: Record<ReviewUser['role'], string> = {
+  librarian: '馆员',
+  modelist: '模型师',
+  reviewer: '评审员',
+  admin: '管理员'
+};
+
+export const REVIEW_USER_ROLE_DESCRIPTIONS: Record<ReviewUser['role'], string> = {
+  librarian: '负责文档归档与版本管理',
+  modelist: '负责方案建模与参数调整',
+  reviewer: '负责方案审查与提出意见',
+  admin: '管理员，拥有全部权限'
+};
+
+export const REVIEW_USER_COLORS = [
+  '#EF4444', '#F97316', '#F59E0B', '#84CC16',
+  '#22C55E', '#14B8A6', '#06B6D4', '#3B82F6',
+  '#8B5CF6', '#EC4899', '#F43F5E', '#6366F1'
+];
+
+export const PRESET_REVIEW_USERS: ReviewUser[] = [
+  { id: 'preset-librarian-1', name: '张馆员', role: 'librarian', color: '#3B82F6' },
+  { id: 'preset-librarian-2', name: '李馆员', role: 'librarian', color: '#06B6D4' },
+  { id: 'preset-modelist-1', name: '王模型师', role: 'modelist', color: '#F97316' },
+  { id: 'preset-modelist-2', name: '赵模型师', role: 'modelist', color: '#8B5CF6' },
+  { id: 'preset-reviewer-1', name: '陈评审', role: 'reviewer', color: '#22C55E' },
+  { id: 'preset-admin-1', name: '系统管理员', role: 'admin', color: '#EF4444' }
+];

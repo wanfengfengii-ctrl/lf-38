@@ -15,7 +15,22 @@ import type {
   PathChainOffset,
   VersionSnapshot,
   VersionDiff,
-  PlaybackStep
+  PlaybackStep,
+  ReviewComment,
+  ReviewCommentReply,
+  ReviewStatus,
+  ReviewSelection,
+  ReviewUser,
+  ReviewPriority,
+  ReviewExportData,
+  ReviewActivity,
+  ReviewActivityType,
+  ReviewMention,
+  ReviewTraceabilityLink,
+  ReviewClosureMetrics,
+  ReviewTargetType,
+  NodeDiff,
+  RopeDiff
 } from '$lib/types';
 import {
   generateId,
@@ -23,7 +38,9 @@ import {
   ROPE_COLORS,
   DEFAULT_ROPE_COLOR,
   createDefaultPathChainNode,
-  NODE_RADIUS
+  NODE_RADIUS,
+  REVIEW_USER_COLORS,
+  REVIEW_PRIORITY_LABELS
 } from '$lib/types';
 import {
   validateAll,
@@ -42,7 +59,10 @@ import {
   generatePlaybackSteps as doGeneratePlaybackSteps,
   restoreVersion as doRestoreVersion,
   exportVersions as doExportVersions,
-  importVersions as doImportVersions
+  importVersions as doImportVersions,
+  loadReviews as doLoadReviews,
+  saveReviews as doSaveReviews,
+  clearReviews as doClearReviews
 } from '$lib/utils/versionManager';
 
 function createEditorStore() {
@@ -66,6 +86,23 @@ function createEditorStore() {
   const playbackIndex = writable<number>(-1);
   const isPlaybackMode = writable<boolean>(false);
   const playbackRopeId = writable<string | null>(null);
+
+  const reviewComments = writable<ReviewComment[]>([]);
+  const currentReviewUser = writable<ReviewUser | null>(null);
+  const reviewSelection = writable<ReviewSelection>({ targetType: 'general' });
+  const isReviewSelectionActive = writable<boolean>(false);
+  const selectedReviewCommentId = writable<string | null>(null);
+  const reviewFilterStatus = writable<ReviewStatus | 'all'>('all');
+  const reviewFilterUserId = writable<string | null>(null);
+  const showPlaybackComments = writable<boolean>(true);
+  const diffFilterCommentId = writable<string | null>(null);
+  const reviewFilterPriority = writable<ReviewPriority | 'all'>('all');
+  const reviewFilterCategory = writable<string | 'all'>('all');
+  const newReviewCommentPriority = writable<ReviewPriority>('medium');
+  const newReviewCommentCategory = writable<string | ''>('');
+  const reviewUsersRegistry = writable<ReviewUser[]>([]);
+  const lastCommentNumber = writable<number>(0);
+  const reviewActivities = writable<ReviewActivity[]>([]);
 
   const validationErrors = derived<
     [typeof nodes, typeof ropes],
@@ -789,6 +826,8 @@ function createEditorStore() {
   function loadFromLocalStorage(): boolean {
     try {
       loadVersionsFromStorage();
+      loadReviewsFromStorage();
+      ensureDefaultReviewUser();
       const json = localStorage.getItem(STORAGE_KEY);
       if (!json) return false;
       const data = JSON.parse(json);
@@ -838,6 +877,943 @@ function createEditorStore() {
     });
     refreshAllRopeLengths();
     markDirty();
+  }
+
+  function loadReviewsFromStorage(): void {
+    const loaded = doLoadReviews();
+    reviewComments.set(loaded);
+  }
+
+  function persistReviews(): void {
+    const $comments = get(reviewComments);
+    doSaveReviews($comments);
+  }
+
+  function setCurrentReviewUser(user: ReviewUser | null): void {
+    currentReviewUser.set(user);
+  }
+
+  function ensureDefaultReviewUser(): ReviewUser {
+    const existing = get(currentReviewUser);
+    if (existing) return existing;
+
+    const colorIdx = Math.floor(Math.random() * REVIEW_USER_COLORS.length);
+    const defaultUser: ReviewUser = {
+      id: 'user-' + generateId(),
+      name: '评审员 ' + Math.floor(Math.random() * 1000),
+      role: 'reviewer',
+      color: REVIEW_USER_COLORS[colorIdx]
+    };
+    currentReviewUser.set(defaultUser);
+    return defaultUser;
+  }
+
+  function startReviewSelection(targetType: ReviewTargetType = 'general'): void {
+    isReviewSelectionActive.set(true);
+    reviewSelection.set({ targetType });
+    mode.set('review');
+  }
+
+  function addNodeToReviewSelection(nodeId: string): void {
+    reviewSelection.update(($sel) => {
+      const nodeIds = new Set($sel.nodeIds || []);
+      nodeIds.add(nodeId);
+      return {
+        ...$sel,
+        targetType: $sel.targetType === 'general' ? 'node' : $sel.targetType,
+        nodeIds: Array.from(nodeIds)
+      };
+    });
+  }
+
+  function addRopeToReviewSelection(ropeId: string): void {
+    reviewSelection.update(($sel) => {
+      const ropeIds = new Set($sel.ropeIds || []);
+      ropeIds.add(ropeId);
+      return {
+        ...$sel,
+        targetType: $sel.targetType === 'general' ? 'rope' : $sel.targetType,
+        ropeIds: Array.from(ropeIds)
+      };
+    });
+  }
+
+  function removeNodeFromReviewSelection(nodeId: string): void {
+    reviewSelection.update(($sel) => {
+      const nodeIds = ($sel.nodeIds || []).filter(id => id !== nodeId);
+      return {
+        ...$sel,
+        nodeIds: nodeIds.length > 0 ? nodeIds : undefined,
+        targetType: nodeIds.length === 0 && !$sel.ropeIds?.length ? 'general' : $sel.targetType
+      };
+    });
+  }
+
+  function removeRopeFromReviewSelection(ropeId: string): void {
+    reviewSelection.update(($sel) => {
+      const ropeIds = ($sel.ropeIds || []).filter(id => id !== ropeId);
+      return {
+        ...$sel,
+        ropeIds: ropeIds.length > 0 ? ropeIds : undefined,
+        targetType: ropeIds.length === 0 && !$sel.nodeIds?.length ? 'general' : $sel.targetType
+      };
+    });
+  }
+
+  function clearReviewSelection(): void {
+    reviewSelection.set({ targetType: 'general' });
+  }
+
+  function cancelReviewSelection(): void {
+    isReviewSelectionActive.set(false);
+    clearReviewSelection();
+    if (get(mode) === 'review') {
+      mode.set('select');
+    }
+  }
+
+  function getNextCommentNumber(): number {
+    const current = get(lastCommentNumber);
+    const $comments = get(reviewComments);
+    let maxNum = current;
+    for (const c of $comments) {
+      if (c.commentNumber && c.commentNumber > maxNum) {
+        maxNum = c.commentNumber;
+      }
+    }
+    const next = maxNum + 1;
+    lastCommentNumber.set(next);
+    return next;
+  }
+
+  function createReviewComment(
+    content: string,
+    versionId?: string,
+    options?: {
+      priority?: ReviewPriority;
+      category?: string;
+      tags?: string[];
+    }
+  ): ReviewComment | null {
+    const user = ensureDefaultReviewUser();
+    const $selection = get(reviewSelection);
+    const $viewingVersionId = get(viewingVersionId);
+    const effectiveVersionId = versionId || $viewingVersionId;
+
+    if (!effectiveVersionId && $selection.targetType !== 'general') {
+      return null;
+    }
+
+    const optsPriority = options?.priority;
+    const storePriority = get(newReviewCommentPriority);
+    const priority = optsPriority !== undefined && optsPriority !== null ? optsPriority : (storePriority || 'medium');
+    const optsCategory = options?.category;
+    const storeCategory = get(newReviewCommentCategory);
+    const category = optsCategory || storeCategory || undefined;
+
+    const comment: ReviewComment = {
+      id: generateId(),
+      commentNumber: getNextCommentNumber(),
+      versionId: effectiveVersionId || '',
+      userId: user.id,
+      userName: user.name,
+      userRole: user.role,
+      userColor: user.color || REVIEW_USER_COLORS[0],
+      content,
+      createdAt: new Date().toISOString(),
+      status: 'pending',
+      priority,
+      selection: { ...$selection },
+      category,
+      tags: options?.tags,
+      replies: []
+    };
+
+    registerReviewUser(user);
+
+    reviewComments.update(($comments) => {
+      const updated = [...$comments, comment];
+      doSaveReviews(updated);
+      return updated;
+    });
+
+    clearReviewSelection();
+    isReviewSelectionActive.set(false);
+    newReviewCommentCategory.set('');
+    newReviewCommentPriority.set('medium');
+
+    addReviewActivity('comment_created', comment.id, comment.commentNumber, content, {
+      targetType: $selection.targetType,
+      nodeIds: $selection.nodeIds,
+      ropeIds: $selection.ropeIds
+    });
+
+    const mentions = parseMentions(content);
+    if (mentions.length > 0) {
+      for (const m of mentions) {
+        addReviewActivity('reply_added', comment.id, comment.commentNumber, `@${m.userName} 被提及`);
+      }
+    }
+
+    return comment;
+  }
+
+  function registerReviewUser(user: ReviewUser): void {
+    reviewUsersRegistry.update(($users) => {
+      const exists = $users.some(u => u.id === user.id);
+      if (exists) return $users;
+      return [...$users, user];
+    });
+  }
+
+  function getAllReviewUsers(): ReviewUser[] {
+    const users = new Map<string, ReviewUser>();
+    for (const u of get(reviewUsersRegistry)) {
+      users.set(u.id, u);
+    }
+    for (const c of get(reviewComments)) {
+      if (!users.has(c.userId)) {
+        users.set(c.userId, {
+          id: c.userId,
+          name: c.userName,
+          role: c.userRole,
+          color: c.userColor
+        });
+      }
+    }
+    return Array.from(users.values());
+  }
+
+  function setNewReviewCommentPriority(priority: ReviewPriority): void {
+    newReviewCommentPriority.set(priority);
+  }
+
+  function setNewReviewCommentCategory(category: string): void {
+    newReviewCommentCategory.set(category);
+  }
+
+  function setDiffFilterCommentId(commentId: string | null): void {
+    diffFilterCommentId.set(commentId);
+  }
+
+  function setReviewFilterPriority(priority: ReviewPriority | 'all'): void {
+    reviewFilterPriority.set(priority);
+  }
+
+  function setReviewFilterCategory(category: string | 'all'): void {
+    reviewFilterCategory.set(category);
+  }
+
+  function getFilteredDiffForComment(diff: VersionDiff | null, commentId: string): {
+    nodeDiffs: NodeDiff[];
+    ropeDiffs: RopeDiff[];
+  } | null {
+    if (!diff) return null;
+    const $comments = get(reviewComments);
+    const comment = $comments.find(c => c.id === commentId);
+    if (!comment) return null;
+
+    const targetNodeIds = new Set(comment.selection.nodeIds || []);
+    const targetRopeIds = new Set(comment.selection.ropeIds || []);
+
+    const allRelatedNodeIds = new Set(targetNodeIds);
+    const allRelatedRopeIds = new Set(targetRopeIds);
+
+    if (comment.resolvedVersionId) {
+      for (const nid of (comment.selection.nodeIds || [])) {
+        allRelatedNodeIds.add(nid);
+      }
+    }
+
+    const filteredNodeDiffs = diff.nodeDiffs.filter(nd => {
+      return targetNodeIds.has(nd.nodeId) || isNodeRelatedToRopeIds(nd.nodeId, targetRopeIds, diff);
+    });
+
+    const filteredRopeDiffs = diff.ropeDiffs.filter(rd => {
+      return targetRopeIds.has(rd.ropeId) || isRopeRelatedToNodeIds(rd.ropeId, targetNodeIds, diff);
+    });
+
+    return { nodeDiffs: filteredNodeDiffs, ropeDiffs: filteredRopeDiffs };
+  }
+
+  function isNodeRelatedToRopeIds(nodeId: string, ropeIds: Set<string>, diff: VersionDiff): boolean {
+    for (const rd of diff.ropeDiffs) {
+      if (!ropeIds.has(rd.ropeId)) continue;
+      const rope = rd.newRope || rd.oldRope;
+      if (!rope) continue;
+      if (rope.nodePath.some(cn => cn.nodeId === nodeId)) return true;
+    }
+    return false;
+  }
+
+  function isRopeRelatedToNodeIds(ropeId: string, nodeIds: Set<string>, diff: VersionDiff): boolean {
+    const rd = diff.ropeDiffs.find(x => x.ropeId === ropeId);
+    if (!rd) return false;
+    const rope = rd.newRope || rd.oldRope;
+    if (!rope) return false;
+    return rope.nodePath.some(cn => nodeIds.has(cn.nodeId));
+  }
+
+  function getRelatedCommentsForDiffItem(
+    diffType: 'node' | 'rope',
+    itemId: string,
+    diff: VersionDiff
+  ): ReviewComment[] {
+    const result: ReviewComment[] = [];
+    const $comments = get(reviewComments);
+    const versionIds = new Set([diff.versionAId, diff.versionBId]);
+
+    for (const c of $comments) {
+      if (!versionIds.has(c.versionId) && c.resolvedVersionId !== diff.versionBId) continue;
+      const targetNodeIds = new Set(c.selection.nodeIds || []);
+      const targetRopeIds = new Set(c.selection.ropeIds || []);
+      let match = false;
+      if (diffType === 'node' && targetNodeIds.has(itemId)) match = true;
+      if (diffType === 'rope' && targetRopeIds.has(itemId)) match = true;
+      if (diffType === 'rope' && isRopeRelatedToNodeIds(itemId, targetNodeIds, diff)) match = true;
+      if (diffType === 'node' && isNodeRelatedToRopeIds(itemId, targetRopeIds, diff)) match = true;
+      if (match) result.push(c);
+    }
+    return result;
+  }
+
+  function getVersionDiffForComment(commentId: string): {
+    fromVersion: VersionSnapshot | null;
+    toVersion: VersionSnapshot | null;
+  } {
+    const $comments = get(reviewComments);
+    const $versions = get(versions);
+    const comment = $comments.find(c => c.id === commentId);
+    if (!comment) return { fromVersion: null, toVersion: null };
+
+    const sorted = [...$versions].sort((a, b) => a.versionNumber - b.versionNumber);
+    const commentVerIdx = sorted.findIndex(v => v.id === comment.versionId);
+
+    let fromVersion = commentVerIdx >= 0 ? sorted[commentVerIdx] : null;
+    let toVersion = null;
+
+    if (comment.resolvedVersionId) {
+      toVersion = sorted.find(v => v.id === comment.resolvedVersionId) || null;
+      if (commentVerIdx >= 0 && !fromVersion) {
+        fromVersion = sorted[commentVerIdx];
+      }
+    } else if (commentVerIdx >= 0 && commentVerIdx < sorted.length - 1) {
+      toVersion = sorted[sorted.length - 1];
+    } else if (commentVerIdx < 0 && sorted.length > 0) {
+      fromVersion = sorted[0];
+      toVersion = sorted[sorted.length - 1];
+    }
+
+    return { fromVersion, toVersion };
+  }
+
+  function updateReviewCommentStatus(
+    commentId: string,
+    status: ReviewStatus,
+    replyContent?: string
+  ): boolean {
+    const user = ensureDefaultReviewUser();
+    registerReviewUser(user);
+
+    let success = false;
+    let oldStatus: ReviewStatus | undefined;
+    let commentNumber = 0;
+    reviewComments.update(($comments) => {
+      const idx = $comments.findIndex(c => c.id === commentId);
+      if (idx === -1) return $comments;
+
+      const comment = $comments[idx];
+      oldStatus = comment.status;
+      commentNumber = comment.commentNumber;
+      const statusLabels: Record<ReviewStatus, string> = {
+        pending: '待处理',
+        in_progress: '处理中',
+        resolved: '已解决',
+        rejected: '已拒绝',
+        verified: '已验证',
+        closed: '已关闭'
+      };
+      const reply: ReviewCommentReply = {
+        id: generateId(),
+        userId: user.id,
+        userName: user.name,
+        userRole: user.role,
+        userColor: user.color,
+        content: replyContent || `状态变更为：${statusLabels[status]}`,
+        createdAt: new Date().toISOString(),
+        changedStatusTo: status
+      };
+
+      const updated: ReviewComment = {
+        ...comment,
+        status,
+        replies: [...comment.replies, reply],
+        ...(status === 'resolved' ? {
+          resolvedAt: new Date().toISOString(),
+          resolvedBy: user.id,
+          resolvedByName: user.name
+        } : {}),
+        ...(status === 'verified' ? {
+          verifiedAt: new Date().toISOString(),
+          verifiedBy: user.id,
+          verifiedByName: user.name
+        } : {}),
+        ...(status === 'closed' ? {
+          closure: {
+            closedAt: new Date().toISOString(),
+            closedBy: user.id,
+            closedByName: user.name,
+            note: replyContent
+          }
+        } : {})
+      };
+
+      const result = [...$comments];
+      result[idx] = updated;
+      doSaveReviews(result);
+      success = true;
+      return result;
+    });
+
+    if (success) {
+      const activityTypeMap: Partial<Record<ReviewStatus, ReviewActivityType>> = {
+        verified: 'comment_verified',
+        closed: 'comment_closed',
+        in_progress: 'status_changed',
+        pending: 'comment_reopened'
+      };
+      const activityType = activityTypeMap[status] || 'status_changed';
+      addReviewActivity(activityType, commentId, commentNumber, replyContent || `状态变更为${status}`, {
+        oldStatus,
+        newStatus: status
+      });
+    }
+
+    return success;
+  }
+
+  function verifyReviewComment(commentId: string, note?: string): boolean {
+    const $comments = get(reviewComments);
+    const comment = $comments.find(c => c.id === commentId);
+    if (!comment) return false;
+    if (comment.status !== 'resolved') {
+      if (!updateReviewCommentStatus(commentId, 'resolved', '自动标记解决后验证')) {
+        return false;
+      }
+    }
+    return updateReviewCommentStatus(commentId, 'verified', note || '验证通过：问题已正确解决');
+  }
+
+  function closeReviewComment(commentId: string, note?: string): boolean {
+    return updateReviewCommentStatus(commentId, 'closed', note);
+  }
+
+  function reopenReviewComment(commentId: string, note?: string): boolean {
+    return updateReviewCommentStatus(commentId, 'in_progress', note || '重新打开评审意见');
+  }
+
+  function updateReviewCommentPriority(commentId: string, priority: ReviewPriority): boolean {
+    let success = false;
+    let oldPriority: ReviewPriority | undefined;
+    let commentNumber = 0;
+    reviewComments.update(($comments) => {
+      const idx = $comments.findIndex(c => c.id === commentId);
+      if (idx === -1) return $comments;
+      oldPriority = $comments[idx].priority;
+      commentNumber = $comments[idx].commentNumber;
+      const result = [...$comments];
+      result[idx] = { ...result[idx], priority };
+      doSaveReviews(result);
+      success = true;
+      return result;
+    });
+    if (success && oldPriority) {
+      addReviewActivity('priority_changed', commentId, commentNumber, `优先级变更为${REVIEW_PRIORITY_LABELS[priority]}`, {
+        oldPriority,
+        newPriority: priority
+      });
+    }
+    return success;
+  }
+
+  function updateReviewCommentCategory(commentId: string, category: string): boolean {
+    let success = false;
+    let oldCategory: string | undefined;
+    let commentNumber = 0;
+    reviewComments.update(($comments) => {
+      const idx = $comments.findIndex(c => c.id === commentId);
+      if (idx === -1) return $comments;
+      oldCategory = $comments[idx].category;
+      commentNumber = $comments[idx].commentNumber;
+      const result = [...$comments];
+      result[idx] = { ...result[idx], category: category || undefined };
+      doSaveReviews(result);
+      success = true;
+      return result;
+    });
+    if (success) {
+      addReviewActivity('category_changed', commentId, commentNumber, `分类变更为${category || '无'}`);
+    }
+    return success;
+  }
+
+  function addReviewCommentReply(commentId: string, content: string): boolean {
+    const user = ensureDefaultReviewUser();
+    registerReviewUser(user);
+
+    let success = false;
+    let commentNumber = 0;
+    reviewComments.update(($comments) => {
+      const idx = $comments.findIndex(c => c.id === commentId);
+      if (idx === -1) return $comments;
+
+      const comment = $comments[idx];
+      commentNumber = comment.commentNumber;
+      const reply: ReviewCommentReply = {
+        id: generateId(),
+        userId: user.id,
+        userName: user.name,
+        userRole: user.role,
+        userColor: user.color,
+        content,
+        createdAt: new Date().toISOString()
+      };
+
+      const updated: ReviewComment = {
+        ...comment,
+        replies: [...comment.replies, reply]
+      };
+
+      const result = [...$comments];
+      result[idx] = updated;
+      doSaveReviews(result);
+      success = true;
+      return result;
+    });
+
+    if (success) {
+      addReviewActivity('reply_added', commentId, commentNumber, content);
+    }
+
+    return success;
+  }
+
+  function exportReviews(): string {
+    const data: ReviewExportData = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      reviewComments: get(reviewComments),
+      reviewUsers: getAllReviewUsers()
+    };
+    return JSON.stringify(data, null, 2);
+  }
+
+  function importReviews(json: string): boolean {
+    try {
+      const data = JSON.parse(json) as ReviewExportData;
+      if (!data.reviewComments || !Array.isArray(data.reviewComments)) return false;
+
+      const existingComments = get(reviewComments);
+      const existingIds = new Set(existingComments.map(c => c.id));
+      let maxNum = get(lastCommentNumber);
+      const merged: ReviewComment[] = [...existingComments];
+
+      for (const c of data.reviewComments) {
+        if (!existingIds.has(c.id)) {
+          if (!c.commentNumber) {
+            maxNum++;
+            merged.push({ ...c, commentNumber: maxNum });
+          } else {
+            if (c.commentNumber > maxNum) maxNum = c.commentNumber;
+            merged.push(c);
+          }
+        }
+      }
+
+      lastCommentNumber.set(maxNum);
+      reviewComments.set(merged);
+      doSaveReviews(merged);
+
+      if (data.reviewUsers && Array.isArray(data.reviewUsers)) {
+        for (const u of data.reviewUsers) {
+          registerReviewUser(u);
+        }
+      }
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function exportReviewsWithVersions(): string {
+    const versionData = doExportVersions(get(versions));
+    const reviewData: ReviewExportData = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      reviewComments: get(reviewComments),
+      reviewUsers: getAllReviewUsers()
+    };
+    return JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      versions: JSON.parse(versionData),
+      reviews: reviewData
+    }, null, 2);
+  }
+
+  function importReviewsWithVersions(json: string): boolean {
+    try {
+      const data = JSON.parse(json);
+      if (data.versions) {
+        const imported = doImportVersions(JSON.stringify(data.versions));
+        if (imported) {
+          const existing = get(versions);
+          const existingIds = new Set(existing.map(v => v.id));
+          const merged = [...existing];
+          let nextNum = getNextVersionNumber();
+          for (const v of imported) {
+            if (!existingIds.has(v.id)) {
+              nextNum++;
+              merged.push({ ...v, id: generateId(), versionNumber: nextNum });
+            }
+          }
+          versions.set(merged);
+          saveVersions(merged);
+        }
+      }
+      if (data.reviews) {
+        return importReviews(JSON.stringify(data.reviews));
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function getAllCategories(): string[] {
+    const cats = new Set<string>();
+    for (const c of get(reviewComments)) {
+      if (c.category) cats.add(c.category);
+    }
+    return Array.from(cats).sort();
+  }
+
+  function deleteReviewComment(commentId: string): boolean {
+    let success = false;
+    reviewComments.update(($comments) => {
+      const filtered = $comments.filter(c => c.id !== commentId);
+      if (filtered.length === $comments.length) return $comments;
+      doSaveReviews(filtered);
+      success = true;
+      return filtered;
+    });
+
+    if (get(selectedReviewCommentId) === commentId) {
+      selectedReviewCommentId.set(null);
+    }
+    return success;
+  }
+
+  function setSelectedReviewComment(commentId: string | null): void {
+    selectedReviewCommentId.set(commentId);
+  }
+
+  function setReviewFilterStatus(status: ReviewStatus | 'all'): void {
+    reviewFilterStatus.set(status);
+  }
+
+  function setReviewFilterUserId(userId: string | null): void {
+    reviewFilterUserId.set(userId);
+  }
+
+  function toggleShowPlaybackComments(): void {
+    showPlaybackComments.update(v => !v);
+  }
+
+  function resolveReviewCommentWithVersion(commentId: string, versionId: string, note?: string): boolean {
+    const user = ensureDefaultReviewUser();
+    const resolveNote = note || `已在新版本中解决此问题`;
+    const success = updateReviewCommentStatus(commentId, 'resolved', resolveNote);
+    if (success) {
+      reviewComments.update(($comments) => {
+        const idx = $comments.findIndex(c => c.id === commentId);
+        if (idx === -1) return $comments;
+        const result = [...$comments];
+        result[idx] = {
+          ...result[idx],
+          resolvedVersionId: versionId,
+          resolvedBy: user.id,
+          resolvedByName: user.name,
+          resolveNote
+        };
+        doSaveReviews(result);
+        return result;
+      });
+
+      addReviewActivity('version_resolved', commentId, 0, resolveNote, {
+        versionId,
+        newStatus: 'resolved'
+      });
+    }
+    return success;
+  }
+
+  function getReviewCommentsForVersion(versionId: string): ReviewComment[] {
+    const $comments = get(reviewComments);
+    return $comments.filter(c => c.versionId === versionId);
+  }
+
+  function getReviewCommentsForDiff(versionAId: string, versionBId: string): ReviewComment[] {
+    const $comments = get(reviewComments);
+    const versionIds = new Set([versionAId, versionBId]);
+    return $comments.filter(c => versionIds.has(c.versionId));
+  }
+
+  function clearAllReviews(): void {
+    doClearReviews();
+    reviewComments.set([]);
+    selectedReviewCommentId.set(null);
+    clearReviewSelection();
+  }
+
+  function addReviewActivity(
+    type: ReviewActivityType,
+    commentId: string,
+    commentNumber: number,
+    content: string,
+    metadata?: ReviewActivity['metadata']
+  ): void {
+    const user = get(currentReviewUser) || ensureDefaultReviewUser();
+    const activity: ReviewActivity = {
+      id: generateId(),
+      type,
+      commentId,
+      commentNumber,
+      userId: user.id,
+      userName: user.name,
+      userColor: user.color || REVIEW_USER_COLORS[0],
+      userRole: user.role,
+      content,
+      createdAt: new Date().toISOString(),
+      metadata
+    };
+    reviewActivities.update(($acts) => {
+      const updated = [activity, ...$acts].slice(0, 500);
+      return updated;
+    });
+  }
+
+  function parseMentions(text: string): ReviewMention[] {
+    const mentions: ReviewMention[] = [];
+    const regex = /@(\S+)/g;
+    let match: RegExpExecArray | null;
+    const allUsers = getAllReviewUsers();
+    while ((match = regex.exec(text)) !== null) {
+      const mentionName = match[1];
+      const foundUser = allUsers.find(u => u.name === mentionName);
+      if (foundUser) {
+        mentions.push({
+          userId: foundUser.id,
+          userName: foundUser.name,
+          startIndex: match.index,
+          endIndex: match.index + match[0].length
+        });
+      }
+    }
+    return mentions;
+  }
+
+  function getReviewActivities(limit: number = 50): ReviewActivity[] {
+    return get(reviewActivities).slice(0, limit);
+  }
+
+  function getActivitiesForComment(commentId: string): ReviewActivity[] {
+    return get(reviewActivities).filter(a => a.commentId === commentId);
+  }
+
+  function getClosureMetrics(): ReviewClosureMetrics {
+    const $comments = get(reviewComments);
+    const $versions = get(versions);
+    const now = Date.now();
+    const oneDayMs = 24 * 60 * 60 * 1000;
+
+    const metrics: ReviewClosureMetrics = {
+      totalComments: $comments.length,
+      pendingCount: 0,
+      inProgressCount: 0,
+      resolvedCount: 0,
+      verifiedCount: 0,
+      closedCount: 0,
+      rejectedCount: 0,
+      closureRate: 0,
+      avgResolutionTimeMs: 0,
+      criticalOpen: 0,
+      highOpen: 0,
+      byCategory: {},
+      byUser: {},
+      recentActivityCount: 0
+    };
+
+    let totalResolutionTime = 0;
+    let resolvedWithTimeCount = 0;
+
+    for (const c of $comments) {
+      switch (c.status) {
+        case 'pending': metrics.pendingCount++; break;
+        case 'in_progress': metrics.inProgressCount++; break;
+        case 'resolved': metrics.resolvedCount++; break;
+        case 'verified': metrics.verifiedCount++; break;
+        case 'closed': metrics.closedCount++; break;
+        case 'rejected': metrics.rejectedCount++; break;
+      }
+
+      if ((c.status === 'pending' || c.status === 'in_progress') && c.priority === 'critical') {
+        metrics.criticalOpen++;
+      }
+      if ((c.status === 'pending' || c.status === 'in_progress') && c.priority === 'high') {
+        metrics.highOpen++;
+      }
+
+      if ((c.status === 'resolved' || c.status === 'verified' || c.status === 'closed') && c.resolvedAt && c.createdAt) {
+        const resolutionTime = new Date(c.resolvedAt).getTime() - new Date(c.createdAt).getTime();
+        if (resolutionTime > 0) {
+          totalResolutionTime += resolutionTime;
+          resolvedWithTimeCount++;
+        }
+      }
+
+      if (c.category) {
+        if (!metrics.byCategory[c.category]) {
+          metrics.byCategory[c.category] = { total: 0, resolved: 0 };
+        }
+        metrics.byCategory[c.category].total++;
+        if (c.status === 'resolved' || c.status === 'verified' || c.status === 'closed') {
+          metrics.byCategory[c.category].resolved++;
+        }
+      }
+
+      if (!metrics.byUser[c.userId]) {
+        metrics.byUser[c.userId] = { name: c.userName, color: c.userColor, total: 0, resolved: 0 };
+      }
+      metrics.byUser[c.userId].total++;
+      if (c.status === 'resolved' || c.status === 'verified' || c.status === 'closed') {
+        metrics.byUser[c.userId].resolved++;
+      }
+    }
+
+    const closedOrResolved = metrics.resolvedCount + metrics.verifiedCount + metrics.closedCount + metrics.rejectedCount;
+    metrics.closureRate = metrics.totalComments > 0 ? closedOrResolved / metrics.totalComments : 0;
+    metrics.avgResolutionTimeMs = resolvedWithTimeCount > 0 ? totalResolutionTime / resolvedWithTimeCount : 0;
+
+    const recentThreshold = now - oneDayMs;
+    metrics.recentActivityCount = get(reviewActivities).filter(
+      a => new Date(a.createdAt).getTime() > recentThreshold
+    ).length;
+
+    return metrics;
+  }
+
+  function getTraceabilityLinks(): ReviewTraceabilityLink[] {
+    const $comments = get(reviewComments);
+    const $versions = get(versions);
+    const versionMap = new Map($versions.map(v => [v.id, v]));
+    const links: ReviewTraceabilityLink[] = [];
+
+    for (const c of $comments) {
+      const sourceVersion = versionMap.get(c.versionId);
+      const resolvedVersion = c.resolvedVersionId ? versionMap.get(c.resolvedVersionId) : undefined;
+      const isResolved = c.status === 'resolved' || c.status === 'verified' || c.status === 'closed';
+
+      links.push({
+        commentId: c.id,
+        commentNumber: c.commentNumber,
+        commentContent: c.content,
+        commentStatus: c.status,
+        commentPriority: c.priority,
+        commentUserId: c.userId,
+        commentUserName: c.userName,
+        commentUserColor: c.userColor,
+        sourceVersionId: c.versionId,
+        sourceVersionNumber: sourceVersion?.versionNumber ?? 0,
+        resolvedVersionId: c.resolvedVersionId,
+        resolvedVersionNumber: resolvedVersion?.versionNumber,
+        resolutionNote: c.resolveNote,
+        isResolved
+      });
+    }
+
+    return links.sort((a, b) => a.sourceVersionNumber - b.sourceVersionNumber);
+  }
+
+  function getTraceabilityForVersion(versionId: string): ReviewTraceabilityLink[] {
+    return getTraceabilityLinks().filter(
+      l => l.sourceVersionId === versionId || l.resolvedVersionId === versionId
+    );
+  }
+
+  function getUserCollaborationSummary(): {
+    users: Array<ReviewUser & { commentCount: number; replyCount: number; resolvedCount: number; lastActiveAt: string | null }>;
+    totalInteractions: number;
+    crossUserReplies: number;
+  } {
+    const $comments = get(reviewComments);
+    const $activities = get(reviewActivities);
+    const userMap = new Map<string, ReviewUser & { commentCount: number; replyCount: number; resolvedCount: number; lastActiveAt: string | null }>();
+
+    for (const u of getAllReviewUsers()) {
+      userMap.set(u.id, { ...u, commentCount: 0, replyCount: 0, resolvedCount: 0, lastActiveAt: null });
+    }
+
+    let totalInteractions = 0;
+    let crossUserReplies = 0;
+
+    for (const c of $comments) {
+      if (!userMap.has(c.userId)) {
+        userMap.set(c.userId, {
+          id: c.userId, name: c.userName, role: c.userRole, color: c.userColor,
+          commentCount: 0, replyCount: 0, resolvedCount: 0, lastActiveAt: null
+        });
+      }
+      const userEntry = userMap.get(c.userId)!;
+      userEntry.commentCount++;
+      totalInteractions++;
+
+      if (c.status === 'resolved' || c.status === 'verified' || c.status === 'closed') {
+        userEntry.resolvedCount++;
+      }
+
+      const cTime = new Date(c.createdAt).getTime();
+      if (!userEntry.lastActiveAt || cTime > new Date(userEntry.lastActiveAt).getTime()) {
+        userEntry.lastActiveAt = c.createdAt;
+      }
+
+      for (const r of c.replies) {
+        if (!userMap.has(r.userId)) {
+          userMap.set(r.userId, {
+            id: r.userId, name: r.userName, role: r.userRole, color: r.userColor || REVIEW_USER_COLORS[0],
+            commentCount: 0, replyCount: 0, resolvedCount: 0, lastActiveAt: null
+          });
+        }
+        const replyUser = userMap.get(r.userId)!;
+        replyUser.replyCount++;
+        totalInteractions++;
+
+        if (r.userId !== c.userId) {
+          crossUserReplies++;
+        }
+
+        const rTime = new Date(r.createdAt).getTime();
+        if (!replyUser.lastActiveAt || rTime > new Date(replyUser.lastActiveAt).getTime()) {
+          replyUser.lastActiveAt = r.createdAt;
+        }
+      }
+    }
+
+    return {
+      users: Array.from(userMap.values()),
+      totalInteractions,
+      crossUserReplies
+    };
   }
 
   function loadDemoData() {
@@ -969,6 +1945,21 @@ function createEditorStore() {
     playbackIndex,
     isPlaybackMode,
     playbackRopeId,
+    reviewComments,
+    currentReviewUser,
+    reviewSelection,
+    isReviewSelectionActive,
+    selectedReviewCommentId,
+    reviewFilterStatus,
+    reviewFilterUserId,
+    showPlaybackComments,
+    diffFilterCommentId,
+    reviewFilterPriority,
+    reviewFilterCategory,
+    newReviewCommentPriority,
+    newReviewCommentCategory,
+    reviewUsersRegistry,
+    lastCommentNumber,
     nodes,
     ropes,
     selectedNodeId,
@@ -1033,7 +2024,59 @@ function createEditorStore() {
     stopPlayback,
     exportAllVersions,
     importAllVersions,
-    loadVersionsFromStorage
+    loadVersionsFromStorage,
+    loadReviewsFromStorage,
+    persistReviews,
+    setCurrentReviewUser,
+    ensureDefaultReviewUser,
+    startReviewSelection,
+    addNodeToReviewSelection,
+    addRopeToReviewSelection,
+    removeNodeFromReviewSelection,
+    removeRopeFromReviewSelection,
+    clearReviewSelection,
+    cancelReviewSelection,
+    createReviewComment,
+    updateReviewCommentStatus,
+    addReviewCommentReply,
+    deleteReviewComment,
+    setSelectedReviewComment,
+    setReviewFilterStatus,
+    setReviewFilterUserId,
+    toggleShowPlaybackComments,
+    resolveReviewCommentWithVersion,
+    getReviewCommentsForVersion,
+    getReviewCommentsForDiff,
+    clearAllReviews,
+    setDiffFilterCommentId,
+    setReviewFilterPriority,
+    setReviewFilterCategory,
+    setNewReviewCommentPriority,
+    setNewReviewCommentCategory,
+    getFilteredDiffForComment,
+    getRelatedCommentsForDiffItem,
+    getVersionDiffForComment,
+    verifyReviewComment,
+    closeReviewComment,
+    reopenReviewComment,
+    updateReviewCommentPriority,
+    updateReviewCommentCategory,
+    exportReviews,
+    importReviews,
+    exportReviewsWithVersions,
+    importReviewsWithVersions,
+    getAllCategories,
+    getAllReviewUsers,
+    registerReviewUser,
+    reviewActivities,
+    addReviewActivity,
+    parseMentions,
+    getReviewActivities,
+    getActivitiesForComment,
+    getClosureMetrics,
+    getTraceabilityLinks,
+    getTraceabilityForVersion,
+    getUserCollaborationSummary
   };
 }
 
